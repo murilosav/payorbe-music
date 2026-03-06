@@ -866,38 +866,49 @@ export function renderAdminPage(): string {
 			item.querySelector('.status-icon').innerHTML = '<div class="spinner" style="width:16px;height:16px;border-width:2px;border-color:rgba(0,0,0,0.15);border-top-color:#1a1a1a;"></div>';
 			item.querySelector('.file-status').textContent = 'Enviando...';
 
-			try {
-				const formData = new FormData();
-				formData.append('file', pending.file);
-				formData.append('playlist_id', playlistId);
-				formData.append('title', pending.title);
-				formData.append('artist', pending.artist || 'Desconhecido');
-				formData.append('album', pending.album || '');
-				formData.append('duration', String(pending.duration || 0));
-				formData.append('folder', pending.folder);
-				if (pending.cover) {
-					formData.append('cover', pending.cover, 'cover.jpg');
-				}
+			let success = false;
+			for (let attempt = 0; attempt < 3 && !success; attempt++) {
+				try {
+					if (attempt > 0) {
+						item.querySelector('.file-status').textContent = 'Tentativa ' + (attempt + 1) + '/3...';
+						await new Promise(r => setTimeout(r, 1000 * attempt));
+					}
 
-				const res = await fetch('/api/songs/upload', { method: 'POST', body: formData });
-				if (res.ok) {
-					uploadedFiles.push(pending);
-					item.className = 'upload-item';
-					item.querySelector('.status-icon').className = 'status-icon done';
-					item.querySelector('.status-icon').innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"></path></svg>';
-					item.querySelector('.file-status').textContent = 'Enviado';
-					item.querySelector('.file-status').style.color = '#22c55e';
-				} else {
-					const err = await res.json();
-					throw new Error(err.error);
+					const formData = new FormData();
+					formData.append('file', pending.file);
+					formData.append('playlist_id', playlistId);
+					formData.append('title', pending.title);
+					formData.append('artist', pending.artist || 'Desconhecido');
+					formData.append('album', pending.album || '');
+					formData.append('duration', String(pending.duration || 0));
+					formData.append('folder', pending.folder);
+					if (pending.cover) {
+						formData.append('cover', pending.cover, 'cover.jpg');
+					}
+
+					const res = await fetch('/api/songs/upload', { method: 'POST', body: formData });
+					if (res.ok) {
+						uploadedFiles.push(pending);
+						item.className = 'upload-item';
+						item.querySelector('.status-icon').className = 'status-icon done';
+						item.querySelector('.status-icon').innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"></path></svg>';
+						item.querySelector('.file-status').textContent = 'Enviado';
+						item.querySelector('.file-status').style.color = '#22c55e';
+						success = true;
+					} else {
+						const err = await res.json();
+						throw new Error(err.error);
+					}
+				} catch (err) {
+					if (attempt === 2) {
+						item.className = 'upload-item';
+						item.querySelector('.status-icon').className = 'status-icon error';
+						item.querySelector('.status-icon').innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>';
+						item.querySelector('.file-status').textContent = err.message;
+						item.querySelector('.file-status').style.color = '#ef4444';
+						errors++;
+					}
 				}
-			} catch (err) {
-				item.className = 'upload-item';
-				item.querySelector('.status-icon').className = 'status-icon error';
-				item.querySelector('.status-icon').innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>';
-				item.querySelector('.file-status').textContent = err.message;
-				item.querySelector('.file-status').style.color = '#ef4444';
-				errors++;
 			}
 
 			completed++;
@@ -936,8 +947,8 @@ export function renderAdminPage(): string {
 		document.getElementById('bannerPct').textContent = '100%';
 		document.getElementById('bannerBar').style.width = '100%';
 
-		// Auto-generate ZIPs after successful upload
-		if (errors === 0 && uploadedFiles.length > 0) {
+		// Auto-generate ZIPs from successfully uploaded files
+		if (uploadedFiles.length > 0) {
 			await generateZipsFromFiles(playlistId, uploadedFiles);
 		}
 
