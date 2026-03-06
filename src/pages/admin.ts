@@ -147,8 +147,8 @@ export function renderAdminPage(): string {
 					</div>
 				</div>
 				<div class="form-group">
-					<label>Descricao</label>
-					<input type="text" id="playlistDesc" placeholder="Descricao da playlist">
+					<label>Descri\u00e7\u00e3o</label>
+					<input type="text" id="playlistDesc" placeholder="Descri\u00e7\u00e3o da playlist">
 				</div>
 				<div style="display:flex;gap:8px;">
 					<button class="btn btn-primary" onclick="createPlaylist()">Criar Playlist</button>
@@ -174,7 +174,7 @@ export function renderAdminPage(): string {
 			<!-- Info -->
 			<div class="card section">
 				<div class="section-title">
-					<span>Informacoes</span>
+					<span>Informa\u00e7\u00f5es</span>
 					<button class="btn btn-primary btn-sm" onclick="savePlaylist()" id="saveBtn" style="display:none;">Salvar</button>
 				</div>
 				<div style="display:flex;gap:16px;align-items:flex-start;">
@@ -187,7 +187,7 @@ export function renderAdminPage(): string {
 							<div class="form-group"><label>Nome</label><input type="text" id="detailName" oninput="onDetailChange()"></div>
 							<div class="form-group"><label>Slug</label><input type="text" id="detailSlug" disabled style="background:#f8f8f8;color:#888;"></div>
 						</div>
-						<div class="form-group"><label>Descricao</label><input type="text" id="detailDesc" oninput="onDetailChange()"></div>
+						<div class="form-group"><label>Descri\u00e7\u00e3o</label><input type="text" id="detailDesc" oninput="onDetailChange()"></div>
 					</div>
 				</div>
 				<div style="display:flex;align-items:center;gap:6px;margin-top:12px;">
@@ -218,7 +218,7 @@ export function renderAdminPage(): string {
 
 			<!-- Upload -->
 			<div class="card section">
-				<div class="section-title"><span>Upload de Musicas</span></div>
+				<div class="section-title"><span>Upload de M\u00fasicas</span></div>
 				<div style="display:flex;gap:8px;margin-bottom:12px;">
 					<button class="btn btn-primary" onclick="document.getElementById('folderInput').click()" style="flex:1;">
 						<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
@@ -259,7 +259,7 @@ export function renderAdminPage(): string {
 			<!-- Songs -->
 			<div class="card section">
 				<div class="section-title">
-					<span id="songsTitle">Musicas</span>
+					<span id="songsTitle">M\u00fasicas</span>
 					<div style="display:flex;gap:8px;align-items:center;">
 						<button class="btn btn-danger btn-sm" id="bulkDeleteBtn" style="display:none;" onclick="bulkDeleteSongs()">Excluir selecionadas</button>
 					</div>
@@ -407,7 +407,7 @@ export function renderAdminPage(): string {
 					'<div class="pl-info">' +
 						'<div class="pl-name">' + p.name + '</div>' +
 						'<div class="pl-stats">' +
-							'<span>' + songCount + ' musica' + (songCount !== 1 ? 's' : '') + '</span>' +
+							'<span>' + songCount + ' m\u00fasica' + (songCount !== 1 ? 's' : '') + '</span>' +
 							'<span>&middot;</span>' +
 							'<span>' + totalSizeMB + ' MB</span>' +
 							'<span>&middot;</span>' +
@@ -430,7 +430,7 @@ export function renderAdminPage(): string {
 		var slug = document.getElementById('playlistSlug').value.trim();
 		var desc = document.getElementById('playlistDesc').value.trim();
 
-		if (!name || !slug) { toast('Nome e slug sao obrigatorios.', 'error'); return; }
+		if (!name || !slug) { toast('Nome e slug s\u00e3o obrigat\u00f3rios.', 'error'); return; }
 
 		var res = await fetch('/api/playlists', {
 			method: 'POST',
@@ -456,7 +456,7 @@ export function renderAdminPage(): string {
 		var name = document.getElementById('detailName').value.trim();
 		var desc = document.getElementById('detailDesc').value.trim();
 
-		if (!name) { toast('Nome nao pode ser vazio.', 'error'); return; }
+		if (!name) { toast('Nome n\u00e3o pode ser vazio.', 'error'); return; }
 
 		var res = await fetch('/api/playlists/' + currentPlaylist.id, {
 			method: 'PUT',
@@ -476,9 +476,9 @@ export function renderAdminPage(): string {
 	}
 
 	async function deletePlaylist(id, name) {
-		if (!confirm('Excluir "' + name + '" e todas as suas musicas?')) return;
+		if (!confirm('Excluir "' + name + '" e todas as suas m\u00fasicas?')) return;
 		await fetch('/api/playlists/' + id, { method: 'DELETE' });
-		toast('Playlist excluida.');
+		toast('Playlist exclu\u00edda.');
 		loadPlaylists();
 	}
 
@@ -523,10 +523,10 @@ export function renderAdminPage(): string {
 		var res = await fetch('/api/playlists/' + currentPlaylist.slug + '/songs');
 		var songs = await res.json();
 
-		document.getElementById('songsTitle').textContent = 'Musicas (' + songs.length + ')';
+		document.getElementById('songsTitle').textContent = 'M\u00fasicas (' + songs.length + ')';
 
 		if (songs.length === 0) {
-			document.getElementById('songsList').innerHTML = '<div style="text-align:center;padding:24px;color:#aaa;font-size:13px;">Nenhuma musica ainda. Use o upload acima.</div>';
+			document.getElementById('songsList').innerHTML = '<div style="text-align:center;padding:24px;color:#aaa;font-size:13px;">Nenhuma m\u00fasica ainda. Use o upload acima.</div>';
 			document.getElementById('bulkDeleteBtn').style.display = 'none';
 			return;
 		}
@@ -600,7 +600,7 @@ export function renderAdminPage(): string {
 	async function bulkDeleteSongs() {
 		var ids = getSelectedSongIds();
 		if (ids.length === 0) return;
-		if (!confirm('Excluir ' + ids.length + ' musica' + (ids.length !== 1 ? 's' : '') + '?')) return;
+		if (!confirm('Excluir ' + ids.length + ' m\u00fasica' + (ids.length !== 1 ? 's' : '') + '?')) return;
 
 		var res = await fetch('/api/songs/bulk-delete', {
 			method: 'POST',
@@ -609,7 +609,7 @@ export function renderAdminPage(): string {
 		});
 
 		if (res.ok) {
-			toast(ids.length + ' musica' + (ids.length !== 1 ? 's' : '') + ' excluida' + (ids.length !== 1 ? 's' : '') + '.');
+			toast(ids.length + ' m\u00fasica' + (ids.length !== 1 ? 's' : '') + ' exclu\u00edda' + (ids.length !== 1 ? 's' : '') + '.');
 			loadDetailSongs();
 			loadDetailZips();
 		} else {
@@ -637,24 +637,24 @@ export function renderAdminPage(): string {
 		var btn = document.getElementById('zipBtn');
 
 		if (songCount === 0) {
-			badgeEl.innerHTML = '<span class="badge badge-muted">Sem musicas</span>';
-			infoEl.textContent = 'Adicione musicas primeiro.';
+			badgeEl.innerHTML = '<span class="badge badge-muted">Sem m\u00fasicas</span>';
+			infoEl.textContent = 'Adicione m\u00fasicas primeiro.';
 			btn.textContent = 'Gerar ZIP';
 			btn.disabled = true;
 		} else if (zips.length === 0) {
-			badgeEl.innerHTML = '<span class="badge badge-muted">Nao gerado</span>';
-			infoEl.textContent = songCount + ' musica' + (songCount !== 1 ? 's' : '') + ' sem ZIP.';
+			badgeEl.innerHTML = '<span class="badge badge-muted">N\u00e3o gerado</span>';
+			infoEl.textContent = songCount + ' m\u00fasica' + (songCount !== 1 ? 's' : '') + ' sem ZIP.';
 			btn.textContent = 'Gerar ZIP';
 			btn.disabled = false;
 		} else if (zipSongCount < songCount) {
 			var diff = songCount - zipSongCount;
 			badgeEl.innerHTML = '<span class="badge badge-warning">Desatualizado</span>';
-			infoEl.textContent = 'ZIP tem ' + zipSongCount + ' musicas, mas a playlist tem ' + songCount + '. ' + diff + ' musica' + (diff !== 1 ? 's' : '') + ' adicionada' + (diff !== 1 ? 's' : '') + ' desde o ultimo ZIP.';
+			infoEl.textContent = 'ZIP tem ' + zipSongCount + ' m\u00fasicas, mas a playlist tem ' + songCount + '. ' + diff + ' m\u00fasica' + (diff !== 1 ? 's' : '') + ' adicionada' + (diff !== 1 ? 's' : '') + ' desde o \u00faltimo ZIP.';
 			btn.textContent = 'Regerar ZIP';
 			btn.disabled = false;
 		} else {
 			badgeEl.innerHTML = '<span class="badge badge-success">Pronto</span>';
-			infoEl.textContent = 'ZIP com ' + zipSongCount + ' musicas (' + zipSizeMB + ' MB). Pronto para download.';
+			infoEl.textContent = 'ZIP com ' + zipSongCount + ' m\u00fasicas (' + zipSizeMB + ' MB). Pronto para download.';
 			btn.textContent = 'Regerar ZIP';
 			btn.disabled = false;
 		}
@@ -672,12 +672,12 @@ export function renderAdminPage(): string {
 		btn.disabled = true;
 		btn.textContent = 'Gerando...';
 		progress.style.display = 'block';
-		status.textContent = 'Buscando musicas...';
+		status.textContent = 'Buscando m\u00fasicas...';
 
 		try {
 			var songsRes = await fetchRetry('/api/playlists/' + slug + '/songs', {}, 3);
 			var songs = await songsRes.json();
-			if (songs.length === 0) { status.textContent = 'Nenhuma musica.'; btn.disabled = false; return; }
+			if (songs.length === 0) { status.textContent = 'Nenhuma m\u00fasica.'; btn.disabled = false; return; }
 
 			await fetch('/api/playlists/' + playlistId + '/zips', { method: 'DELETE' });
 
@@ -769,7 +769,7 @@ export function renderAdminPage(): string {
 
 			toast('ZIP gerado com sucesso!');
 			bar.style.width = '100%';
-			status.textContent = 'Concluido!';
+			status.textContent = 'Conclu\u00eddo!';
 			setTimeout(function() { progress.style.display = 'none'; }, 2000);
 			loadDetailZips();
 			// Update song count in currentPlaylist
@@ -856,7 +856,7 @@ export function renderAdminPage(): string {
 			if (!isAudioFile(fileList[i].name)) continue;
 			files.push({ file: fileList[i], folder: folder || '' });
 		}
-		if (files.length === 0) { toast('Nenhum arquivo de audio encontrado.', 'error'); return; }
+		if (files.length === 0) { toast('Nenhum arquivo de \u00e1udio encontrado.', 'error'); return; }
 		preparePending(files);
 	}
 
@@ -1003,7 +1003,7 @@ export function renderAdminPage(): string {
 		var withArtist = pendingFiles.filter(function(f) { return f.artist !== 'Desconhecido'; }).length;
 		var folderCount = Object.keys(grouped).length;
 
-		document.getElementById('summaryTitle').textContent = folderCount + ' pasta' + (folderCount !== 1 ? 's' : '') + ' | ' + pendingFiles.length + ' musicas';
+		document.getElementById('summaryTitle').textContent = folderCount + ' pasta' + (folderCount !== 1 ? 's' : '') + ' | ' + pendingFiles.length + ' m\u00fasicas';
 		document.getElementById('summaryInfo').textContent = sizeMB + ' total | ' + withCover + ' com capa | ' + withArtist + ' com artista';
 
 		var previewHtml = '';
@@ -1018,7 +1018,7 @@ export function renderAdminPage(): string {
 			var folderCovers = items.filter(function(it) { return it.cover; }).length;
 			previewHtml += '<div style="display:flex;align-items:center;justify-content:space-between;gap:6px;padding:6px 0;font-size:13px;color:#555;">';
 			previewHtml += '<span style="display:flex;align-items:center;gap:6px;font-weight:' + (isLargeBatch ? '400' : '600') + ';"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg> ' + folder + '</span>';
-			previewHtml += '<span style="color:#aaa;font-size:12px;">' + items.length + ' musicas | ' + folderSize + ' MB | ' + folderCovers + ' capas</span>';
+			previewHtml += '<span style="color:#aaa;font-size:12px;">' + items.length + ' m\u00fasicas | ' + folderSize + ' MB | ' + folderCovers + ' capas</span>';
 			previewHtml += '</div>';
 
 			if (!isLargeBatch) {
@@ -1182,12 +1182,12 @@ export function renderAdminPage(): string {
 		document.getElementById('bannerSpinner').style.display = 'none';
 		if (errors > 0) {
 			banner.className = 'upload-banner active has-errors';
-			document.getElementById('bannerText').textContent = 'Concluido com ' + errors + ' erro(s) de ' + total + ' em ' + elapsedStr;
-			document.getElementById('progressText').textContent = 'Concluido com ' + errors + ' erro(s) em ' + elapsedStr;
+			document.getElementById('bannerText').textContent = 'Conclu\u00eddo com ' + errors + ' erro(s) de ' + total + ' em ' + elapsedStr;
+			document.getElementById('progressText').textContent = 'Conclu\u00eddo com ' + errors + ' erro(s) em ' + elapsedStr;
 		} else {
 			banner.className = 'upload-banner active done';
-			document.getElementById('bannerText').textContent = total + ' musica' + (total !== 1 ? 's' : '') + ' enviada' + (total !== 1 ? 's' : '') + ' em ' + elapsedStr + '!';
-			document.getElementById('progressText').textContent = 'Upload concluido em ' + elapsedStr + '!';
+			document.getElementById('bannerText').textContent = total + ' m\u00fasica' + (total !== 1 ? 's' : '') + ' enviada' + (total !== 1 ? 's' : '') + ' em ' + elapsedStr + '!';
+			document.getElementById('progressText').textContent = 'Upload conclu\u00eddo em ' + elapsedStr + '!';
 		}
 		document.getElementById('bannerPct').textContent = '100%';
 		document.getElementById('bannerBar').style.width = '100%';
@@ -1453,7 +1453,7 @@ export function renderAdminPage(): string {
 		banner.className = 'upload-banner active done';
 		bannerPct.textContent = '100%';
 		bannerBar.style.width = '100%';
-		bannerText.textContent = 'Upload e ZIP concluidos!';
+		bannerText.textContent = 'Upload e ZIP conclu\u00eddos!';
 	}
 
 	// ===== Init =====
