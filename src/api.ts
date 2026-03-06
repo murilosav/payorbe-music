@@ -48,11 +48,21 @@ export async function handleApi(request: Request, env: Env, path: string): Promi
 	const folderMatch = path.match(/^\/api\/folders\/(\d+)$/);
 	if (folderMatch && request.method === "PUT") {
 		const id = parseInt(folderMatch[1]);
-		const body = await request.json<{ name?: string; description?: string }>();
+		const body = await request.json<{ name?: string; slug?: string; description?: string }>();
 		const fields: string[] = [];
 		const values: any[] = [];
 		if (body.name !== undefined) { fields.push("name = ?"); values.push(body.name); }
 		if (body.description !== undefined) { fields.push("description = ?"); values.push(body.description); }
+		if (body.slug !== undefined) {
+			const newSlug = body.slug.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/^-|-$/g, "");
+			if (!newSlug) return json({ error: "Slug inválido" }, 400);
+			const [existingFolder, existingPlaylist] = await Promise.all([
+				env.DB.prepare("SELECT id FROM folders WHERE slug = ? AND id != ?").bind(newSlug, id).first(),
+				env.DB.prepare("SELECT id FROM playlists WHERE slug = ?").bind(newSlug).first(),
+			]);
+			if (existingFolder || existingPlaylist) return json({ error: "Slug já em uso" }, 409);
+			fields.push("slug = ?"); values.push(newSlug);
+		}
 		if (fields.length === 0) return json({ error: "No fields to update" }, 400);
 		values.push(id);
 		await env.DB.prepare(`UPDATE folders SET ${fields.join(", ")} WHERE id = ?`).bind(...values).run();
@@ -153,13 +163,23 @@ export async function handleApi(request: Request, env: Env, path: string): Promi
 	// PUT /api/playlists/:id - Update playlist
 	if (playlistDeleteMatch && request.method === "PUT") {
 		const id = parseInt(playlistDeleteMatch[1]);
-		const body = await request.json<{ name?: string; description?: string }>();
+		const body = await request.json<{ name?: string; slug?: string; description?: string }>();
 
 		const fields: string[] = [];
 		const values: any[] = [];
 
 		if (body.name !== undefined) { fields.push("name = ?"); values.push(body.name); }
 		if (body.description !== undefined) { fields.push("description = ?"); values.push(body.description); }
+		if (body.slug !== undefined) {
+			const newSlug = body.slug.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/^-|-$/g, "");
+			if (!newSlug) return json({ error: "Slug inválido" }, 400);
+			const [existingPlaylist, existingFolder] = await Promise.all([
+				env.DB.prepare("SELECT id FROM playlists WHERE slug = ? AND id != ?").bind(newSlug, id).first(),
+				env.DB.prepare("SELECT id FROM folders WHERE slug = ?").bind(newSlug).first(),
+			]);
+			if (existingPlaylist || existingFolder) return json({ error: "Slug já em uso" }, 409);
+			fields.push("slug = ?"); values.push(newSlug);
+		}
 
 		if (fields.length === 0) return json({ error: "No fields to update" }, 400);
 

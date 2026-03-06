@@ -117,6 +117,22 @@ export function renderAdminPage(): string {
 
 	.progress-bar { width:100%; height:4px; background:#eee; border-radius:2px; overflow:hidden; }
 	.progress-fill { height:100%; background:#1a1a1a; width:0%; transition:width 0.3s; }
+
+	/* Drag & Drop folders */
+	.pl-card[draggable="true"] { cursor:grab; }
+	.pl-card[draggable="true"]:active { cursor:grabbing; }
+	.pl-card.dragging { opacity:0.4; }
+	.folder-drop-zone { transition:all 0.2s; }
+	.folder-drop-zone.drag-over { border-color:#4ade80; background:#f0fdf4; box-shadow:0 0 0 2px rgba(74,222,128,0.3); }
+	.folder-drop-zone.drag-over .folder-drop-hint { display:block; }
+	.folder-drop-hint { display:none; font-size:11px; color:#16a34a; padding:6px 0 0 66px; font-weight:500; }
+	.standalone-zone { transition:all 0.2s; min-height:20px; padding:4px 0; border-radius:8px; }
+	.standalone-zone.drag-over { background:#fef3c7; border:2px dashed #d97706; }
+
+	/* Folder edit inline */
+	.folder-edit-row { display:flex; gap:8px; padding:8px 0 0 66px; align-items:center; flex-wrap:wrap; }
+	.folder-edit-row input { padding:6px 10px; border:1px solid #ddd; border-radius:6px; font-size:12px; font-family:inherit; }
+	.folder-edit-row .btn { padding:4px 12px; font-size:11px; }
 	</style>
 </head>
 <body>
@@ -201,11 +217,10 @@ export function renderAdminPage(): string {
 					<div style="flex:1;">
 						<div class="form-row">
 							<div class="form-group"><label>Nome</label><input type="text" id="detailName" oninput="onDetailChange()"></div>
-							<div class="form-group"><label>Slug</label><input type="text" id="detailSlug" disabled style="background:#f8f8f8;color:#888;"></div>
+							<div class="form-group"><label>Slug</label><input type="text" id="detailSlug" oninput="onDetailChange()"></div>
 						</div>
 						<div class="form-row">
-							<div class="form-group" style="flex:2;"><label>Descri\u00e7\u00e3o</label><input type="text" id="detailDesc" oninput="onDetailChange()"></div>
-							<div class="form-group" style="flex:1;"><label>Pasta</label><select id="detailFolder" onchange="movePlaylistToFolder()"><option value="">Sem pasta</option></select></div>
+							<div class="form-group"><label>Descri\u00e7\u00e3o</label><input type="text" id="detailDesc" oninput="onDetailChange()"></div>
 						</div>
 					</div>
 				</div>
@@ -378,13 +393,6 @@ export function renderAdminPage(): string {
 
 		document.getElementById('saveBtn').style.display = 'none';
 
-		// Fill folder dropdown
-		var folderSel = document.getElementById('detailFolder');
-		folderSel.innerHTML = '<option value="">Sem pasta</option>' +
-			foldersCache.map(function(f) {
-				return '<option value="' + f.id + '"' + (playlist.folder_id === f.id ? ' selected' : '') + '>' + f.name + '</option>';
-			}).join('');
-
 		// Reset upload
 		pendingFiles = [];
 		document.getElementById('uploadSummary').style.display = 'none';
@@ -428,7 +436,7 @@ export function renderAdminPage(): string {
 			? '<img src="/api/playlists/' + p.id + '/cover-preview" style="width:100%;height:100%;object-fit:cover;">'
 			: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>';
 
-		return '<div class="pl-card" style="margin-left:0;">' +
+		return '<div class="pl-card" draggable="true" ondragstart="onDragStart(event,'+idx+')" ondragend="onDragEnd(event)" style="margin-left:0;">' +
 			'<div class="pl-card-top">' +
 				'<div class="pl-cover">' + coverHtml + '</div>' +
 				'<div class="pl-info">' +
@@ -475,7 +483,7 @@ export function renderAdminPage(): string {
 				if (playlistsCache[pi].folder_id === folder.id) folderPlaylists.push(pi);
 			}
 
-			html += '<div style="margin-bottom:16px;">' +
+			html += '<div class="folder-drop-zone" data-folder-id="'+folder.id+'" ondragover="onFolderDragOver(event)" ondragleave="onFolderDragLeave(event)" ondrop="onFolderDrop(event,'+folder.id+')" style="margin-bottom:16px;">' +
 				'<div class="pl-card" style="background:#f8f8ff;border-color:#e0e0f0;">' +
 					'<div class="pl-card-top">' +
 						'<div style="font-size:24px;width:52px;text-align:center;">\ud83d\udcc1</div>' +
@@ -484,14 +492,24 @@ export function renderAdminPage(): string {
 							'<div class="pl-stats">' +
 								'<span>' + folderPlaylists.length + ' playlist' + (folderPlaylists.length !== 1 ? 's' : '') + '</span>' +
 								(folder.description ? '<span>&middot;</span><span>' + folder.description + '</span>' : '') +
+								'<span>&middot;</span><span style="color:#aaa;">/' + folder.slug + '</span>' +
 							'</div>' +
 						'</div>' +
 						'<div class="pl-actions">' +
-							'<button class="btn btn-ghost btn-sm" onclick="copyLink(\\''+folderLink+'\\')">Link da Pasta</button>' +
+							'<button class="btn btn-ghost btn-sm" onclick="toggleFolderEdit('+folder.id+')">Editar</button>' +
+							'<button class="btn btn-ghost btn-sm" onclick="copyLink(\\''+folderLink+'\\')">Link</button>' +
 							'<button class="btn btn-danger btn-sm" onclick="deleteFolder('+folder.id+', \\''+folder.name.replace(/'/g, "\\\\'")+'\\')">Excluir</button>' +
 						'</div>' +
 					'</div>' +
-				'</div>';
+				'</div>' +
+				'<div id="folderEdit'+folder.id+'" style="display:none;" class="folder-edit-row">' +
+					'<input type="text" id="feditName'+folder.id+'" value="'+folder.name.replace(/"/g, '&quot;')+'" placeholder="Nome" style="flex:2;">' +
+					'<input type="text" id="feditSlug'+folder.id+'" value="'+folder.slug+'" placeholder="Slug" style="flex:1;">' +
+					'<input type="text" id="feditDesc'+folder.id+'" value="'+(folder.description||'').replace(/"/g, '&quot;')+'" placeholder="Descri\u00e7\u00e3o" style="flex:2;">' +
+					'<button class="btn btn-primary btn-sm" onclick="saveFolder('+folder.id+')">Salvar</button>' +
+					'<button class="btn btn-ghost btn-sm" onclick="toggleFolderEdit('+folder.id+')">Cancelar</button>' +
+				'</div>' +
+				'<div class="folder-drop-hint">Solte aqui para mover para esta pasta</div>';
 
 			// Playlists inside this folder (indented)
 			for (var fpi = 0; fpi < folderPlaylists.length; fpi++) {
@@ -500,7 +518,7 @@ export function renderAdminPage(): string {
 			}
 
 			if (folderPlaylists.length === 0) {
-				html += '<div style="margin-left:32px;padding:12px 16px;color:#aaa;font-size:13px;font-style:italic;">Nenhuma playlist nesta pasta. Arraste playlists para c\u00e1 via "Gerenciar".</div>';
+				html += '<div style="margin-left:32px;padding:12px 16px;color:#aaa;font-size:13px;font-style:italic;">Arraste playlists para c\u00e1.</div>';
 			}
 
 			html += '</div>';
@@ -512,10 +530,14 @@ export function renderAdminPage(): string {
 			if (!playlistsCache[pi].folder_id) standalone.push(pi);
 		}
 
-		if (standalone.length > 0) {
-			if (foldersCache.length > 0) {
-				html += '<div style="font-size:12px;font-weight:600;color:#aaa;padding:12px 0 8px;text-transform:uppercase;letter-spacing:0.5px;">Sem pasta</div>';
+		if (foldersCache.length > 0) {
+			html += '<div class="standalone-zone" ondragover="onStandaloneDragOver(event)" ondragleave="onStandaloneDragLeave(event)" ondrop="onStandaloneDrop(event)">';
+			html += '<div style="font-size:12px;font-weight:600;color:#aaa;padding:12px 0 8px;text-transform:uppercase;letter-spacing:0.5px;">Sem pasta' + (standalone.length > 0 ? '' : ' \u2014 arraste playlists para c\u00e1 para remover de uma pasta') + '</div>';
+			for (var si = 0; si < standalone.length; si++) {
+				html += renderPlaylistCard(playlistsCache[standalone[si]], standalone[si]);
 			}
+			html += '</div>';
+		} else if (standalone.length > 0) {
 			for (var si = 0; si < standalone.length; si++) {
 				html += renderPlaylistCard(playlistsCache[standalone[si]], standalone[si]);
 			}
@@ -558,24 +580,31 @@ export function renderAdminPage(): string {
 	async function savePlaylist() {
 		if (!currentPlaylist) return;
 		var name = document.getElementById('detailName').value.trim();
+		var slug = document.getElementById('detailSlug').value.trim();
 		var desc = document.getElementById('detailDesc').value.trim();
 
 		if (!name) { toast('Nome n\u00e3o pode ser vazio.', 'error'); return; }
+		if (!slug) { toast('Slug n\u00e3o pode ser vazio.', 'error'); return; }
 
 		var res = await fetch('/api/playlists/' + currentPlaylist.id, {
 			method: 'PUT',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ name: name, description: desc })
+			body: JSON.stringify({ name: name, slug: slug, description: desc })
 		});
 
 		if (res.ok) {
 			var updated = await res.json();
 			currentPlaylist.name = updated.name;
+			currentPlaylist.slug = updated.slug;
 			currentPlaylist.description = updated.description;
+			var link = location.origin + '/' + updated.slug + '?token=' + (currentPlaylist.access_token || '');
+			document.getElementById('detailLink').value = link;
+			document.getElementById('detailOpenLink').href = link;
 			document.getElementById('saveBtn').style.display = 'none';
 			toast('Playlist atualizada!');
 		} else {
-			toast('Erro ao salvar.', 'error');
+			var err = await res.json();
+			toast(err.error || 'Erro ao salvar.', 'error');
 		}
 	}
 
@@ -633,8 +662,8 @@ export function renderAdminPage(): string {
 	async function createFolder() {
 		var name = document.getElementById('folderName').value.trim();
 		var slug = document.getElementById('folderSlug').value.trim();
-		var desc = document.getElementById('folderDesc') ? document.getElementById('folderDesc').value.trim() : '';
-		if (!name || !slug) { showToast('Preencha nome e slug', 'error'); return; }
+		var desc = document.getElementById('folderDesc').value.trim();
+		if (!name || !slug) { toast('Preencha nome e slug', 'error'); return; }
 		try {
 			var res = await fetch('/api/folders', {
 				method: 'POST',
@@ -642,41 +671,121 @@ export function renderAdminPage(): string {
 				body: JSON.stringify({ name: name, slug: slug, description: desc })
 			});
 			var data = await res.json();
-			if (!res.ok) { showToast(data.error || 'Erro ao criar pasta', 'error'); return; }
-			showToast('Pasta criada!');
+			if (!res.ok) { toast(data.error || 'Erro ao criar pasta', 'error'); return; }
+			toast('Pasta criada!');
 			document.getElementById('folderName').value = '';
 			document.getElementById('folderSlug').value = '';
-			if (document.getElementById('folderDesc')) document.getElementById('folderDesc').value = '';
+			document.getElementById('folderDesc').value = '';
 			toggleCreateFolderForm();
 			loadPlaylists();
-		} catch (e) { showToast('Erro: ' + e.message, 'error'); }
+		} catch (e) { toast('Erro: ' + e.message, 'error'); }
 	}
 
 	async function deleteFolder(id, name) {
 		if (!confirm('Excluir pasta "' + name + '"? As playlists dentro dela ficar\u00e3o sem pasta.')) return;
 		try {
 			var res = await fetch('/api/folders/' + id, { method: 'DELETE' });
-			if (!res.ok) { var d = await res.json(); showToast(d.error || 'Erro ao excluir', 'error'); return; }
-			showToast('Pasta exclu\u00edda!');
+			if (!res.ok) { var d = await res.json(); toast(d.error || 'Erro ao excluir', 'error'); return; }
+			toast('Pasta exclu\u00edda!');
 			loadPlaylists();
-		} catch (e) { showToast('Erro: ' + e.message, 'error'); }
+		} catch (e) { toast('Erro: ' + e.message, 'error'); }
 	}
 
-	async function movePlaylistToFolder() {
-		if (!currentPlaylist) return;
-		var sel = document.getElementById('detailFolder');
-		var folderId = sel.value ? parseInt(sel.value) : null;
+	function toggleFolderEdit(id) {
+		var el = document.getElementById('folderEdit' + id);
+		el.style.display = el.style.display === 'none' ? 'flex' : 'none';
+	}
+
+	async function saveFolder(id) {
+		var name = document.getElementById('feditName' + id).value.trim();
+		var slug = document.getElementById('feditSlug' + id).value.trim();
+		var desc = document.getElementById('feditDesc' + id).value.trim();
+		if (!name || !slug) { toast('Nome e slug obrigat\u00f3rios.', 'error'); return; }
+		var res = await fetch('/api/folders/' + id, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ name: name, slug: slug, description: desc })
+		});
+		if (res.ok) {
+			toast('Pasta atualizada!');
+			loadPlaylists();
+		} else {
+			var err = await res.json();
+			toast(err.error || 'Erro ao salvar pasta.', 'error');
+		}
+	}
+
+	// ===== Drag & Drop (playlists into folders) =====
+	var dragPlaylistIdx = null;
+
+	function onDragStart(e, idx) {
+		dragPlaylistIdx = idx;
+		e.dataTransfer.effectAllowed = 'move';
+		e.dataTransfer.setData('text/plain', idx);
+		e.target.closest('.pl-card').classList.add('dragging');
+	}
+
+	function onDragEnd(e) {
+		e.target.closest('.pl-card').classList.remove('dragging');
+		dragPlaylistIdx = null;
+		// Remove all drag-over highlights
+		document.querySelectorAll('.drag-over').forEach(function(el) { el.classList.remove('drag-over'); });
+	}
+
+	function onFolderDragOver(e) {
+		e.preventDefault();
+		e.dataTransfer.dropEffect = 'move';
+		e.currentTarget.classList.add('drag-over');
+	}
+
+	function onFolderDragLeave(e) {
+		if (!e.currentTarget.contains(e.relatedTarget)) {
+			e.currentTarget.classList.remove('drag-over');
+		}
+	}
+
+	async function onFolderDrop(e, folderId) {
+		e.preventDefault();
+		e.currentTarget.classList.remove('drag-over');
+		if (dragPlaylistIdx === null) return;
+		var playlist = playlistsCache[dragPlaylistIdx];
+		if (!playlist) return;
+		if (playlist.folder_id === folderId) return;
+		await movePlaylistToFolder(playlist.id, folderId);
+	}
+
+	function onStandaloneDragOver(e) {
+		e.preventDefault();
+		e.dataTransfer.dropEffect = 'move';
+		e.currentTarget.classList.add('drag-over');
+	}
+
+	function onStandaloneDragLeave(e) {
+		if (!e.currentTarget.contains(e.relatedTarget)) {
+			e.currentTarget.classList.remove('drag-over');
+		}
+	}
+
+	async function onStandaloneDrop(e) {
+		e.preventDefault();
+		e.currentTarget.classList.remove('drag-over');
+		if (dragPlaylistIdx === null) return;
+		var playlist = playlistsCache[dragPlaylistIdx];
+		if (!playlist || !playlist.folder_id) return;
+		await movePlaylistToFolder(playlist.id, null);
+	}
+
+	async function movePlaylistToFolder(playlistId, folderId) {
 		try {
-			var res = await fetch('/api/playlists/' + currentPlaylist.id + '/folder', {
+			var res = await fetch('/api/playlists/' + playlistId + '/folder', {
 				method: 'PATCH',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ folder_id: folderId })
 			});
-			if (!res.ok) { showToast('Erro ao mover playlist', 'error'); return; }
-			currentPlaylist.folder_id = folderId;
-			showToast(folderId ? 'Playlist movida para pasta!' : 'Playlist removida da pasta!');
+			if (!res.ok) { toast('Erro ao mover playlist', 'error'); return; }
+			toast(folderId ? 'Playlist movida para pasta!' : 'Playlist removida da pasta!');
 			loadPlaylists();
-		} catch (e) { showToast('Erro: ' + e.message, 'error'); }
+		} catch (e) { toast('Erro: ' + e.message, 'error'); }
 	}
 
 	// ===== Songs =====
