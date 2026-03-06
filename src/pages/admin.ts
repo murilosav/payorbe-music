@@ -592,7 +592,10 @@ export function renderAdminPage(): string {
 		document.getElementById('uploadProgress').style.display = 'none';
 	}
 
-	// Start uploading all pending files
+	// Concurrency limit for parallel uploads
+	const MAX_CONCURRENT = 5;
+
+	// Start uploading all pending files (parallel)
 	async function startUpload() {
 		const playlistId = document.getElementById('uploadPlaylist').value;
 		if (!playlistId) { alert('Selecione uma playlist primeiro.'); return; }
@@ -607,6 +610,7 @@ export function renderAdminPage(): string {
 		const total = pendingFiles.length;
 		let completed = 0;
 		let errors = 0;
+		let startTime = Date.now();
 
 		// Show banner
 		const banner = document.getElementById('uploadBanner');
@@ -634,25 +638,29 @@ export function renderAdminPage(): string {
 			document.getElementById('progressCount').textContent = completed + '/' + total;
 			document.getElementById('bannerPct').textContent = pct + '%';
 			document.getElementById('bannerBar').style.width = pct + '%';
+
+			const elapsed = (Date.now() - startTime) / 1000;
+			const remaining = completed > 0 ? Math.round((elapsed / completed) * (total - completed)) : 0;
+			const eta = remaining > 60 ? Math.round(remaining / 60) + 'min' : remaining + 's';
+
+			const activeCount = document.querySelectorAll('.status-icon.uploading').length;
 			document.getElementById('bannerText').textContent =
-				'Enviando ' + (completed + 1) + ' de ' + total + '...';
+				completed + '/' + total + ' enviadas (' + activeCount + ' em paralelo) - ' + eta + ' restante';
 			document.getElementById('progressText').textContent =
-				'Enviando ' + (completed + 1) + ' de ' + total + '...';
+				completed + '/' + total + ' enviadas - ~' + eta + ' restante';
 		}
 		updateProgress();
 
-		for (let i = 0; i < pendingFiles.length; i++) {
-			const pending = pendingFiles[i];
-			const item = items[i];
+		// Upload a single file
+		async function uploadOne(index) {
+			const pending = pendingFiles[index];
+			const item = items[index];
 
 			// Mark as uploading
 			item.className = 'upload-item uploading';
 			item.querySelector('.status-icon').className = 'status-icon uploading';
 			item.querySelector('.status-icon').innerHTML = '<div class="spinner" style="width:16px;height:16px;border-width:2px;border-color:rgba(0,0,0,0.15);border-top-color:#1a1a1a;"></div>';
 			item.querySelector('.file-status').textContent = 'Enviando...';
-
-			// Scroll to current item
-			item.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
 			try {
 				const formData = new FormData();
@@ -686,16 +694,34 @@ export function renderAdminPage(): string {
 			updateProgress();
 		}
 
+		// Run uploads in parallel with concurrency limit
+		let nextIndex = 0;
+		async function runWorker() {
+			while (nextIndex < total) {
+				const idx = nextIndex++;
+				await uploadOne(idx);
+			}
+		}
+
+		const workers = [];
+		for (let w = 0; w < Math.min(MAX_CONCURRENT, total); w++) {
+			workers.push(runWorker());
+		}
+		await Promise.all(workers);
+
 		// Final state
+		const elapsed = Math.round((Date.now() - startTime) / 1000);
+		const elapsedStr = elapsed > 60 ? Math.round(elapsed / 60) + 'min ' + (elapsed % 60) + 's' : elapsed + 's';
+
 		document.getElementById('bannerSpinner').style.display = 'none';
 		if (errors > 0) {
 			banner.className = 'upload-banner active has-errors';
-			document.getElementById('bannerText').textContent = 'Concluido com ' + errors + ' erro(s) de ' + total;
-			document.getElementById('progressText').textContent = 'Concluido com ' + errors + ' erro(s)';
+			document.getElementById('bannerText').textContent = 'Concluido com ' + errors + ' erro(s) de ' + total + ' em ' + elapsedStr;
+			document.getElementById('progressText').textContent = 'Concluido com ' + errors + ' erro(s) em ' + elapsedStr;
 		} else {
 			banner.className = 'upload-banner active done';
-			document.getElementById('bannerText').textContent = total + ' musica' + (total !== 1 ? 's' : '') + ' enviada' + (total !== 1 ? 's' : '') + ' com sucesso!';
-			document.getElementById('progressText').textContent = 'Upload concluido!';
+			document.getElementById('bannerText').textContent = total + ' musica' + (total !== 1 ? 's' : '') + ' enviada' + (total !== 1 ? 's' : '') + ' em ' + elapsedStr + '!';
+			document.getElementById('progressText').textContent = 'Upload concluido em ' + elapsedStr + '!';
 		}
 		document.getElementById('bannerPct').textContent = '100%';
 		document.getElementById('bannerBar').style.width = '100%';
