@@ -245,8 +245,8 @@ export function renderAdminPage(): string {
 					<input type="file" id="detailCoverInput" accept="image/*" style="display:none;" onchange="uploadDetailCover(this.files[0])">
 					<div style="flex:1;">
 						<div class="form-row">
-							<div class="form-group"><label>Nome</label><input type="text" id="detailName" oninput="onDetailChange()"></div>
-							<div class="form-group"><label>Slug (URL)</label><input type="text" id="detailSlug" oninput="onDetailChange()"></div>
+							<div class="form-group"><label>Nome</label><input type="text" id="detailName" oninput="onDetailNameChange()"></div>
+							<div class="form-group"><label>Slug (URL)</label><input type="text" id="detailSlug" oninput="onDetailSlugChange()"></div>
 						</div>
 						<div class="form-group"><label>Descri\u00e7\u00e3o</label><input type="text" id="detailDesc" oninput="onDetailChange()"></div>
 					</div>
@@ -432,6 +432,7 @@ export function renderAdminPage(): string {
 		}
 
 		document.getElementById('saveBtn').style.display = 'none';
+		detailSlugManual = false;
 
 		// Reset upload
 		pendingFiles = [];
@@ -452,8 +453,35 @@ export function renderAdminPage(): string {
 		loadPlaylists();
 	}
 
+	var detailSlugManual = false; // true if user manually edited the slug
+
 	function onDetailChange() {
 		document.getElementById('saveBtn').style.display = 'inline-flex';
+	}
+
+	function onDetailNameChange() {
+		onDetailChange();
+		if (!detailSlugManual) {
+			var name = document.getElementById('detailName').value;
+			var slug = name.toLowerCase()
+				.normalize('NFD').replace(/[\\u0300-\\u036f]/g, '')
+				.replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+			document.getElementById('detailSlug').value = slug;
+			updateDetailLink();
+		}
+	}
+
+	function onDetailSlugChange() {
+		detailSlugManual = true;
+		onDetailChange();
+		updateDetailLink();
+	}
+
+	function updateDetailLink() {
+		var slug = document.getElementById('detailSlug').value;
+		var link = location.origin + '/' + slug;
+		document.getElementById('detailLink').value = link;
+		document.getElementById('detailOpenLink').href = link;
 	}
 
 	// ===== Playlist List =====
@@ -1641,17 +1669,17 @@ export function renderAdminPage(): string {
 		// Update song count
 		currentPlaylist.song_count = (currentPlaylist.song_count || 0) + uploadedFiles.length;
 
-		if (uploadedFiles.length > 0) {
-			await generateZipsFromFiles(playlistId, uploadedFiles);
-		}
-
 		if (errors === 0) {
 			setTimeout(function() { banner.className = 'upload-banner'; }, 8000);
 		}
 
 		pendingFiles = [];
 		loadDetailSongs();
-		loadDetailZips();
+
+		// Auto-generate ZIP with ALL songs after upload
+		if (uploadedFiles.length > 0) {
+			await regenerateDetailZip();
+		}
 	}
 
 	// ===== ZIP Generation =====
