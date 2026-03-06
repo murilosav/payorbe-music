@@ -199,7 +199,7 @@ export default {
 				const isJwt = token.startsWith("eyJ") && env.JWT_SECRET;
 
 				if (isJwt) {
-					// JWT flow: verify token, check access limits
+					// JWT flow: verify signature + expiration, check access limits
 					let payload;
 					try {
 						payload = await verifyJwt(token, env.JWT_SECRET!);
@@ -210,10 +210,10 @@ export default {
 						});
 					}
 
-					// Find by slug AND verify product_id matches
+					// Find by slug only (JWT validity is enough)
 					[playlist, folder] = await Promise.all([
-						env.DB.prepare("SELECT * FROM playlists WHERE slug = ? AND product_id = ?").bind(slug, payload.product_id).first(),
-						env.DB.prepare("SELECT * FROM folders WHERE slug = ? AND product_id = ?").bind(slug, payload.product_id).first(),
+						env.DB.prepare("SELECT * FROM playlists WHERE slug = ?").bind(slug).first(),
+						env.DB.prepare("SELECT * FROM folders WHERE slug = ?").bind(slug).first(),
 					]);
 
 					if (!playlist && !folder) {
