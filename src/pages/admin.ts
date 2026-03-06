@@ -220,7 +220,8 @@ export function renderAdminPage(): string {
 							<div class="form-group"><label>Slug</label><input type="text" id="detailSlug" oninput="onDetailChange()"></div>
 						</div>
 						<div class="form-row">
-							<div class="form-group"><label>Descri\u00e7\u00e3o</label><input type="text" id="detailDesc" oninput="onDetailChange()"></div>
+							<div class="form-group" style="flex:2;"><label>Descri\u00e7\u00e3o</label><input type="text" id="detailDesc" oninput="onDetailChange()"></div>
+							<div class="form-group" style="flex:1;"><label>Product ID (checkout)</label><input type="text" id="detailProductId" oninput="onDetailChange()" placeholder="Ex: krqwehx_605988" style="font-size:12px;"></div>
 						</div>
 					</div>
 				</div>
@@ -378,6 +379,7 @@ export function renderAdminPage(): string {
 		document.getElementById('detailName').value = playlist.name;
 		document.getElementById('detailSlug').value = playlist.slug;
 		document.getElementById('detailDesc').value = playlist.description || '';
+		document.getElementById('detailProductId').value = playlist.product_id || '';
 
 		const link = location.origin + '/' + playlist.slug + '?token=' + (playlist.access_token || '');
 		document.getElementById('detailLink').value = link;
@@ -506,6 +508,7 @@ export function renderAdminPage(): string {
 					'<input type="text" id="feditName'+folder.id+'" value="'+folder.name.replace(/"/g, '&quot;')+'" placeholder="Nome" style="flex:2;">' +
 					'<input type="text" id="feditSlug'+folder.id+'" value="'+folder.slug+'" placeholder="Slug" style="flex:1;">' +
 					'<input type="text" id="feditDesc'+folder.id+'" value="'+(folder.description||'').replace(/"/g, '&quot;')+'" placeholder="Descri\u00e7\u00e3o" style="flex:2;">' +
+					'<input type="text" id="feditProduct'+folder.id+'" value="'+(folder.product_id||'')+'" placeholder="Product ID" style="flex:1;font-size:11px;">' +
 					'<button class="btn btn-primary btn-sm" onclick="saveFolder('+folder.id+')">Salvar</button>' +
 					'<button class="btn btn-ghost btn-sm" onclick="toggleFolderEdit('+folder.id+')">Cancelar</button>' +
 				'</div>' +
@@ -582,6 +585,7 @@ export function renderAdminPage(): string {
 		var name = document.getElementById('detailName').value.trim();
 		var slug = document.getElementById('detailSlug').value.trim();
 		var desc = document.getElementById('detailDesc').value.trim();
+		var productId = document.getElementById('detailProductId').value.trim();
 
 		if (!name) { toast('Nome n\u00e3o pode ser vazio.', 'error'); return; }
 		if (!slug) { toast('Slug n\u00e3o pode ser vazio.', 'error'); return; }
@@ -589,7 +593,7 @@ export function renderAdminPage(): string {
 		var res = await fetch('/api/playlists/' + currentPlaylist.id, {
 			method: 'PUT',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ name: name, slug: slug, description: desc })
+			body: JSON.stringify({ name: name, slug: slug, description: desc, product_id: productId || null })
 		});
 
 		if (res.ok) {
@@ -700,11 +704,12 @@ export function renderAdminPage(): string {
 		var name = document.getElementById('feditName' + id).value.trim();
 		var slug = document.getElementById('feditSlug' + id).value.trim();
 		var desc = document.getElementById('feditDesc' + id).value.trim();
+		var productId = document.getElementById('feditProduct' + id).value.trim();
 		if (!name || !slug) { toast('Nome e slug obrigat\u00f3rios.', 'error'); return; }
 		var res = await fetch('/api/folders/' + id, {
 			method: 'PUT',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ name: name, slug: slug, description: desc })
+			body: JSON.stringify({ name: name, slug: slug, description: desc, product_id: productId || null })
 		});
 		if (res.ok) {
 			toast('Pasta atualizada!');

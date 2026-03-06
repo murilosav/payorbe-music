@@ -4,11 +4,13 @@ import { renderFolderPage } from "./pages/folder";
 import { renderHomePage } from "./pages/home";
 import { renderAdminPage } from "./pages/admin";
 import { verifyAuth, handleLogin, handleLogout } from "./auth";
+import { verifyJwt } from "./jwt";
 
 export interface Env {
 	DB: D1Database;
 	MUSIC_BUCKET: R2Bucket;
 	ADMIN_KEY?: string;
+	JWT_SECRET?: string;
 }
 
 async function verifySongAccess(env: Env, songId: number, token: string): Promise<{ r2_key: string; title: string; artist: string; cover_r2_key: string } | null> {
@@ -186,14 +188,72 @@ export default {
 				});
 			}
 
-			// Playlist or Folder page: /:slug?token=xxxxx
+			// Playlist or Folder page: /:slug?token=xxxxx (static token or JWT)
 			const slug = path.slice(1).split("/")[0];
 			if (slug) {
-				// Check playlist first, then folder
-				const [playlist, folder] = await Promise.all([
-					env.DB.prepare("SELECT * FROM playlists WHERE slug = ? AND access_token = ?").bind(slug, token).first(),
-					env.DB.prepare("SELECT * FROM folders WHERE slug = ? AND access_token = ?").bind(slug, token).first(),
-				]);
+				let playlist: any = null;
+				let folder: any = null;
+				let accessToken = token; // token used for download links
+
+				// Detect JWT (starts with "eyJ") vs static token
+				const isJwt = token.startsWith("eyJ") && env.JWT_SECRET;
+
+				if (isJwt) {
+					// JWT flow: verify token, check access limits
+					let payload;
+					try {
+						payload = await verifyJwt(token, env.JWT_SECRET!);
+					} catch (err: any) {
+						const msg = err.message === "Token expirado" ? "expired" : "invalid";
+						return new Response(renderJwtError(msg), {
+							status: 403, headers: { "content-type": "text/html; charset=utf-8" },
+						});
+					}
+
+					// Find by slug AND verify product_id matches
+					[playlist, folder] = await Promise.all([
+						env.DB.prepare("SELECT * FROM playlists WHERE slug = ? AND product_id = ?").bind(slug, payload.product_id).first(),
+						env.DB.prepare("SELECT * FROM folders WHERE slug = ? AND product_id = ?").bind(slug, payload.product_id).first(),
+					]);
+
+					if (!playlist && !folder) {
+						return new Response(renderAccessDenied(), {
+							status: 403, headers: { "content-type": "text/html; charset=utf-8" },
+						});
+					}
+
+					// Check download_limit
+					const existing = await env.DB.prepare(
+						"SELECT access_count FROM order_accesses WHERE order_id = ?"
+					).bind(payload.order_id).first<{ access_count: number }>();
+
+					const currentCount = existing?.access_count || 0;
+					if (payload.download_limit > 0 && currentCount >= payload.download_limit) {
+						return new Response(renderJwtError("limit"), {
+							status: 403, headers: { "content-type": "text/html; charset=utf-8" },
+						});
+					}
+
+					// Upsert access count
+					if (existing) {
+						await env.DB.prepare(
+							"UPDATE order_accesses SET access_count = access_count + 1, last_accessed = datetime('now') WHERE order_id = ?"
+						).bind(payload.order_id).run();
+					} else {
+						await env.DB.prepare(
+							"INSERT INTO order_accesses (order_id, product_id, email, access_count, created_at, last_accessed) VALUES (?, ?, ?, 1, datetime('now'), datetime('now'))"
+						).bind(payload.order_id, payload.product_id, payload.email).run();
+					}
+
+					// Use internal access_token for download links
+					accessToken = (playlist || folder).access_token;
+				} else {
+					// Static token flow (existing behavior)
+					[playlist, folder] = await Promise.all([
+						env.DB.prepare("SELECT * FROM playlists WHERE slug = ? AND access_token = ?").bind(slug, token).first(),
+						env.DB.prepare("SELECT * FROM folders WHERE slug = ? AND access_token = ?").bind(slug, token).first(),
+					]);
+				}
 
 				if (playlist) {
 					const [songs, zips] = await Promise.all([
@@ -204,18 +264,16 @@ export default {
 							"SELECT folder, part, total_parts, file_size, song_count FROM playlist_zips WHERE playlist_id = ? ORDER BY folder, part"
 						).bind(playlist.id).all(),
 					]);
-					return new Response(renderPlaylistPage(playlist, songs.results, token, zips.results), {
+					return new Response(renderPlaylistPage(playlist, songs.results, accessToken, zips.results), {
 						headers: { "content-type": "text/html; charset=utf-8" },
 					});
 				}
 
 				if (folder) {
-					// Get all playlists in this folder
 					const playlists = await env.DB.prepare(
 						"SELECT * FROM playlists WHERE folder_id = ? ORDER BY name"
 					).bind(folder.id).all();
 
-					// Get songs and zips for each playlist in parallel
 					const [songsResults, zipsResults] = await Promise.all([
 						Promise.all(playlists.results.map((p: any) =>
 							env.DB.prepare("SELECT * FROM songs WHERE playlist_id = ? ORDER BY folder, track_number, title").bind(p.id).all()
@@ -232,7 +290,7 @@ export default {
 						allZips.set(p.id, zipsResults[i].results);
 					});
 
-					return new Response(renderFolderPage(folder, playlists.results, allSongs, allZips, token), {
+					return new Response(renderFolderPage(folder, playlists.results, allSongs, allZips, accessToken), {
 						headers: { "content-type": "text/html; charset=utf-8" },
 					});
 				}
@@ -269,6 +327,33 @@ function renderAccessDenied(): string {
 	</style>
 </head>
 <body><div class="card"><h1>Acesso Negado</h1><p>Este link é inválido ou expirou. Entre em contato com o vendedor.</p></div></body>
+</html>`;
+}
+
+function renderJwtError(type: "expired" | "invalid" | "limit" | "product"): string {
+	const messages: Record<string, { title: string; desc: string }> = {
+		expired: { title: "Link Expirado", desc: "Seu link de acesso expirou. Entre em contato com o vendedor para obter um novo link." },
+		invalid: { title: "Link Inv\u00e1lido", desc: "Este link de acesso \u00e9 inv\u00e1lido. Verifique se copiou o link corretamente." },
+		limit: { title: "Limite de Acessos Atingido", desc: "Voc\u00ea j\u00e1 atingiu o n\u00famero m\u00e1ximo de acessos permitidos para este link." },
+		product: { title: "Produto N\u00e3o Encontrado", desc: "O produto associado a este link n\u00e3o foi encontrado. Entre em contato com o vendedor." },
+	};
+	const msg = messages[type] || messages.invalid;
+	return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>${msg.title} - Patacos</title>
+	<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+	<style>
+	*{margin:0;padding:0;box-sizing:border-box}
+	body{font-family:'Inter',sans-serif;background:#fafafa;display:flex;align-items:center;justify-content:center;min-height:100vh}
+	.card{text-align:center;padding:48px;max-width:400px}
+	h1{font-size:20px;margin-bottom:8px;color:#1a1a1a}
+	p{font-size:14px;color:#888;line-height:1.6}
+	</style>
+</head>
+<body><div class="card"><h1>${msg.title}</h1><p>${msg.desc}</p></div></body>
 </html>`;
 }
 

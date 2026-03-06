@@ -20,7 +20,7 @@ export async function handleApi(request: Request, env: Env, path: string): Promi
 
 	// POST /api/folders
 	if (path === "/api/folders" && request.method === "POST") {
-		const body = await request.json<{ name: string; slug: string; description?: string }>();
+		const body = await request.json<{ name: string; slug: string; description?: string; product_id?: string }>();
 		if (!body.name || !body.slug) return json({ error: "name and slug required" }, 400);
 
 		const slug = body.slug.toLowerCase().replace(/[^a-z0-9-]/g, "-");
@@ -37,8 +37,8 @@ export async function handleApi(request: Request, env: Env, path: string): Promi
 		const accessToken = Array.from(tokenBytes).map(b => b.toString(16).padStart(2, "0")).join("");
 
 		await env.DB.prepare(
-			"INSERT INTO folders (name, slug, description, access_token) VALUES (?, ?, ?, ?)"
-		).bind(body.name, slug, body.description || "", accessToken).run();
+			"INSERT INTO folders (name, slug, description, access_token, product_id) VALUES (?, ?, ?, ?, ?)"
+		).bind(body.name, slug, body.description || "", accessToken, body.product_id || null).run();
 
 		const folder = await env.DB.prepare("SELECT * FROM folders WHERE slug = ?").bind(slug).first();
 		return json(folder, 201);
@@ -48,19 +48,20 @@ export async function handleApi(request: Request, env: Env, path: string): Promi
 	const folderMatch = path.match(/^\/api\/folders\/(\d+)$/);
 	if (folderMatch && request.method === "PUT") {
 		const id = parseInt(folderMatch[1]);
-		const body = await request.json<{ name?: string; slug?: string; description?: string }>();
+		const body = await request.json<{ name?: string; slug?: string; description?: string; product_id?: string | null }>();
 		const fields: string[] = [];
 		const values: any[] = [];
 		if (body.name !== undefined) { fields.push("name = ?"); values.push(body.name); }
 		if (body.description !== undefined) { fields.push("description = ?"); values.push(body.description); }
+		if (body.product_id !== undefined) { fields.push("product_id = ?"); values.push(body.product_id); }
 		if (body.slug !== undefined) {
 			const newSlug = body.slug.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/^-|-$/g, "");
-			if (!newSlug) return json({ error: "Slug inválido" }, 400);
+			if (!newSlug) return json({ error: "Slug inv\u00e1lido" }, 400);
 			const [existingFolder, existingPlaylist] = await Promise.all([
 				env.DB.prepare("SELECT id FROM folders WHERE slug = ? AND id != ?").bind(newSlug, id).first(),
 				env.DB.prepare("SELECT id FROM playlists WHERE slug = ?").bind(newSlug).first(),
 			]);
-			if (existingFolder || existingPlaylist) return json({ error: "Slug já em uso" }, 409);
+			if (existingFolder || existingPlaylist) return json({ error: "Slug j\u00e1 em uso" }, 409);
 			fields.push("slug = ?"); values.push(newSlug);
 		}
 		if (fields.length === 0) return json({ error: "No fields to update" }, 400);
@@ -102,7 +103,7 @@ export async function handleApi(request: Request, env: Env, path: string): Promi
 
 	// POST /api/playlists
 	if (path === "/api/playlists" && request.method === "POST") {
-		const body = await request.json<{ name: string; slug: string; description?: string; cover_url?: string }>();
+		const body = await request.json<{ name: string; slug: string; description?: string; cover_url?: string; product_id?: string }>();
 		if (!body.name || !body.slug) return json({ error: "name and slug required" }, 400);
 
 		const slug = body.slug.toLowerCase().replace(/[^a-z0-9-]/g, "-");
@@ -120,8 +121,8 @@ export async function handleApi(request: Request, env: Env, path: string): Promi
 		const accessToken = Array.from(tokenBytes).map(b => b.toString(16).padStart(2, "0")).join("");
 
 		await env.DB.prepare(
-			"INSERT INTO playlists (name, slug, description, cover_url, access_token) VALUES (?, ?, ?, ?, ?)"
-		).bind(body.name, slug, body.description || "", body.cover_url || "", accessToken).run();
+			"INSERT INTO playlists (name, slug, description, cover_url, access_token, product_id) VALUES (?, ?, ?, ?, ?, ?)"
+		).bind(body.name, slug, body.description || "", body.cover_url || "", accessToken, body.product_id || null).run();
 
 		const playlist = await env.DB.prepare("SELECT * FROM playlists WHERE slug = ?").bind(slug).first();
 		return json(playlist, 201);
@@ -163,13 +164,14 @@ export async function handleApi(request: Request, env: Env, path: string): Promi
 	// PUT /api/playlists/:id - Update playlist
 	if (playlistDeleteMatch && request.method === "PUT") {
 		const id = parseInt(playlistDeleteMatch[1]);
-		const body = await request.json<{ name?: string; slug?: string; description?: string }>();
+		const body = await request.json<{ name?: string; slug?: string; description?: string; product_id?: string | null }>();
 
 		const fields: string[] = [];
 		const values: any[] = [];
 
 		if (body.name !== undefined) { fields.push("name = ?"); values.push(body.name); }
 		if (body.description !== undefined) { fields.push("description = ?"); values.push(body.description); }
+		if (body.product_id !== undefined) { fields.push("product_id = ?"); values.push(body.product_id); }
 		if (body.slug !== undefined) {
 			const newSlug = body.slug.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/^-|-$/g, "");
 			if (!newSlug) return json({ error: "Slug inválido" }, 400);
