@@ -252,8 +252,8 @@ export function renderAdminPage(): string {
 
 		<div class="tabs">
 			<div class="tab active" onclick="switchTab('playlists')">Playlists</div>
-			<div class="tab" onclick="switchTab('upload')">Upload de Musicas</div>
-			<div class="tab" onclick="switchTab('songs')">Gerenciar Musicas</div>
+			<div class="tab" onclick="switchTab('upload')">Upload de Músicas</div>
+			<div class="tab" onclick="switchTab('songs')">Gerenciar Músicas</div>
 		</div>
 
 		<!-- Playlists Tab -->
@@ -272,8 +272,8 @@ export function renderAdminPage(): string {
 					</div>
 				</div>
 				<div class="form-group">
-					<label>Descricao (opcional)</label>
-					<input type="text" id="playlistDesc" placeholder="Descricao da playlist">
+					<label>Descrição (opcional)</label>
+					<input type="text" id="playlistDesc" placeholder="Descrição da playlist">
 				</div>
 				<button class="btn btn-primary" onclick="createPlaylist()">Criar Playlist</button>
 			</div>
@@ -374,11 +374,21 @@ export function renderAdminPage(): string {
 		}
 		container.innerHTML = data.map(p => {
 			const fullLink = location.origin + '/' + p.slug + '?token=' + (p.access_token || '');
+			const hasCover = p.cover_r2_key ? true : false;
 			return \`
 			<div class="playlist-item" style="flex-direction:column;align-items:stretch;gap:8px;">
 				<div style="display:flex;justify-content:space-between;align-items:center;">
-					<div class="playlist-item-info">
-						<div class="playlist-item-name">\${p.name}</div>
+					<div class="playlist-item-info" style="display:flex;align-items:center;gap:12px;">
+						<div class="playlist-cover-thumb" id="cover-thumb-\${p.id}" style="width:48px;height:48px;border-radius:8px;overflow:hidden;background:#f0f0f0;flex-shrink:0;display:flex;align-items:center;justify-content:center;cursor:pointer;position:relative;" onclick="document.getElementById('cover-input-\${p.id}').click()" title="Clique para \${hasCover ? 'trocar' : 'adicionar'} capa">
+							\${hasCover
+								? '<img src="/api/playlists/' + p.id + '/cover-preview" style="width:100%;height:100%;object-fit:cover;">'
+								: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>'}
+						</div>
+						<input type="file" id="cover-input-\${p.id}" accept="image/*" style="display:none;" onchange="uploadPlaylistCover(\${p.id}, this.files[0])">
+						<div>
+							<div class="playlist-item-name">\${p.name}</div>
+							<span style="font-size:11px;color:\${hasCover ? '#22c55e' : '#aaa'};">\${hasCover ? 'Capa definida' : 'Sem capa'}</span>
+						</div>
 					</div>
 					<div class="playlist-item-actions">
 						<button class="btn btn-sm" style="background:#f0f0f0;color:#333;" onclick="copyLink('\${fullLink}')">Copiar Link</button>
@@ -401,7 +411,7 @@ export function renderAdminPage(): string {
 
 		if (!name || !slug) {
 			msg.className = 'msg error';
-			msg.textContent = 'Nome e slug sao obrigatorios.';
+			msg.textContent = 'Nome e slug são obrigatórios.';
 			return;
 		}
 
@@ -425,8 +435,23 @@ export function renderAdminPage(): string {
 		}
 	}
 
+	async function uploadPlaylistCover(playlistId, file) {
+		if (!file) return;
+		const formData = new FormData();
+		formData.append('file', file);
+		const res = await fetch('/api/playlists/' + playlistId + '/cover', {
+			method: 'POST',
+			body: formData
+		});
+		if (res.ok) {
+			loadPlaylists();
+		} else {
+			alert('Erro ao enviar capa.');
+		}
+	}
+
 	async function deletePlaylist(id, name) {
-		if (!confirm('Excluir playlist "' + name + '" e todas as suas musicas?')) return;
+		if (!confirm('Excluir playlist "' + name + '" e todas as suas músicas?')) return;
 		await fetch('/api/playlists/' + id, { method: 'DELETE' });
 		loadPlaylists();
 	}
@@ -683,7 +708,7 @@ export function renderAdminPage(): string {
 		document.getElementById('uploadSummary').style.display = 'block';
 		document.getElementById('summaryTitle').textContent = 'Lendo metadados...';
 		document.getElementById('summaryInfo').textContent = '0/' + files.length + ' processados';
-		document.getElementById('folderPreview').innerHTML = '<div style="padding:16px;text-align:center;"><div class="progress-bar" style="height:6px;margin-bottom:8px;"><div class="progress-fill" id="parseProgressFill" style="width:0%"></div></div><p style="color:#888;font-size:13px;" id="parseStatus">Lendo metadados das musicas...</p></div>';
+		document.getElementById('folderPreview').innerHTML = '<div style="padding:16px;text-align:center;"><div class="progress-bar" style="height:6px;margin-bottom:8px;"><div class="progress-fill" id="parseProgressFill" style="width:0%"></div></div><p style="color:#888;font-size:13px;" id="parseStatus">Lendo metadados das músicas...</p></div>';
 		document.getElementById('uploadQueue').innerHTML = '';
 		document.getElementById('uploadProgress').style.display = 'none';
 
@@ -713,7 +738,7 @@ export function renderAdminPage(): string {
 		const withArtist = pendingFiles.filter(f => f.artist !== 'Desconhecido').length;
 		const folderCount = Object.keys(grouped).length;
 
-		document.getElementById('summaryTitle').textContent = folderCount + ' pasta' + (folderCount !== 1 ? 's' : '') + ' | ' + pendingFiles.length + ' musicas';
+		document.getElementById('summaryTitle').textContent = folderCount + ' pasta' + (folderCount !== 1 ? 's' : '') + ' | ' + pendingFiles.length + ' músicas';
 		document.getElementById('summaryInfo').textContent =
 			sizeMB + ' total | ' + withCover + ' com capa | ' + withArtist + ' com artista';
 
@@ -727,7 +752,7 @@ export function renderAdminPage(): string {
 			previewHtml += '<span style="display:flex;align-items:center;gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg> ' + folder + '</span>';
 			const folderSize = (items.reduce((s, i) => s + i.file.size, 0) / (1024 * 1024)).toFixed(0);
 			const folderCovers = items.filter(i => i.cover).length;
-			previewHtml += '<span style="color:#aaa;font-size:12px;">' + items.length + ' musicas | ' + folderSize + ' MB | ' + folderCovers + ' capas</span>';
+			previewHtml += '<span style="color:#aaa;font-size:12px;">' + items.length + ' músicas | ' + folderSize + ' MB | ' + folderCovers + ' capas</span>';
 			previewHtml += '</div>';
 
 			// Only show individual songs for small batches
@@ -766,6 +791,7 @@ export function renderAdminPage(): string {
 		let completed = 0;
 		let errors = 0;
 		let startTime = Date.now();
+		const uploadedFiles = []; // Track successfully uploaded files for ZIP generation
 
 		// Show banner
 		const banner = document.getElementById('uploadBanner');
@@ -855,6 +881,7 @@ export function renderAdminPage(): string {
 
 				const res = await fetch('/api/songs/upload', { method: 'POST', body: formData });
 				if (res.ok) {
+					uploadedFiles.push(pending);
 					item.className = 'upload-item';
 					item.querySelector('.status-icon').className = 'status-icon done';
 					item.querySelector('.status-icon').innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"></path></svg>';
@@ -899,22 +926,261 @@ export function renderAdminPage(): string {
 		document.getElementById('bannerSpinner').style.display = 'none';
 		if (errors > 0) {
 			banner.className = 'upload-banner active has-errors';
-			document.getElementById('bannerText').textContent = 'Concluido com ' + errors + ' erro(s) de ' + total + ' em ' + elapsedStr;
-			document.getElementById('progressText').textContent = 'Concluido com ' + errors + ' erro(s) em ' + elapsedStr;
+			document.getElementById('bannerText').textContent = 'Concluído com ' + errors + ' erro(s) de ' + total + ' em ' + elapsedStr;
+			document.getElementById('progressText').textContent = 'Concluído com ' + errors + ' erro(s) em ' + elapsedStr;
 		} else {
 			banner.className = 'upload-banner active done';
-			document.getElementById('bannerText').textContent = total + ' musica' + (total !== 1 ? 's' : '') + ' enviada' + (total !== 1 ? 's' : '') + ' em ' + elapsedStr + '!';
-			document.getElementById('progressText').textContent = 'Upload concluido em ' + elapsedStr + '!';
+			document.getElementById('bannerText').textContent = total + ' música' + (total !== 1 ? 's' : '') + ' enviada' + (total !== 1 ? 's' : '') + ' em ' + elapsedStr + '!';
+			document.getElementById('progressText').textContent = 'Upload concluído em ' + elapsedStr + '!';
 		}
 		document.getElementById('bannerPct').textContent = '100%';
 		document.getElementById('bannerBar').style.width = '100%';
 
-		// Auto-hide banner after 5s on success
+		// Auto-generate ZIPs after successful upload
+		if (errors === 0 && uploadedFiles.length > 0) {
+			await generateZipsFromFiles(playlistId, uploadedFiles);
+		}
+
+		// Auto-hide banner after 8s on success
 		if (errors === 0) {
-			setTimeout(() => { banner.className = 'upload-banner'; }, 5000);
+			setTimeout(() => { banner.className = 'upload-banner'; }, 8000);
 		}
 
 		pendingFiles = [];
+	}
+
+	// ===== ZIP Generation (browser-side) =====
+	const crcT = new Uint32Array(256);
+	for (let i = 0; i < 256; i++) {
+		let c = i;
+		for (let j = 0; j < 8; j++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+		crcT[i] = c;
+	}
+
+	async function fileCrc32(file) {
+		const reader = file.stream().getReader();
+		let crc = 0xFFFFFFFF;
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			for (let i = 0; i < value.length; i++) crc = crcT[(crc ^ value[i]) & 0xFF] ^ (crc >>> 8);
+		}
+		return (crc ^ 0xFFFFFFFF) >>> 0;
+	}
+
+	function buildZipBlob(entries) {
+		// entries: [{ nameBytes, crc, fileSize, file }] - CRC already computed
+		const blobParts = [];
+		const centralDir = [];
+		let offset = 0;
+
+		for (const e of entries) {
+			// Local file header
+			const header = new Uint8Array(30 + e.nameBytes.length);
+			const hv = new DataView(header.buffer);
+			hv.setUint32(0, 0x04034b50, true);
+			hv.setUint16(4, 20, true);
+			hv.setUint16(8, 0, true); // STORE
+			hv.setUint32(14, e.crc, true);
+			hv.setUint32(18, e.fileSize, true);
+			hv.setUint32(22, e.fileSize, true);
+			hv.setUint16(26, e.nameBytes.length, true);
+			header.set(e.nameBytes, 30);
+
+			const headerOffset = offset;
+			blobParts.push(header);
+			offset += header.length;
+			blobParts.push(e.file); // File/Blob reference - disk-backed, not in memory
+			offset += e.fileSize;
+
+			// Central directory entry
+			const cd = new Uint8Array(46 + e.nameBytes.length);
+			const cv = new DataView(cd.buffer);
+			cv.setUint32(0, 0x02014b50, true);
+			cv.setUint16(4, 20, true);
+			cv.setUint16(6, 20, true);
+			cv.setUint32(16, e.crc, true);
+			cv.setUint32(20, e.fileSize, true);
+			cv.setUint32(24, e.fileSize, true);
+			cv.setUint16(28, e.nameBytes.length, true);
+			cv.setUint32(42, headerOffset, true);
+			cd.set(e.nameBytes, 46);
+			centralDir.push(cd);
+		}
+
+		const cdOffset = offset;
+		let cdSize = 0;
+		for (const cd of centralDir) { blobParts.push(cd); cdSize += cd.length; }
+
+		const eocd = new Uint8Array(22);
+		const ev = new DataView(eocd.buffer);
+		ev.setUint32(0, 0x06054b50, true);
+		ev.setUint16(8, entries.length, true);
+		ev.setUint16(10, entries.length, true);
+		ev.setUint32(12, cdSize, true);
+		ev.setUint32(16, cdOffset, true);
+		blobParts.push(eocd);
+
+		return new Blob(blobParts, { type: 'application/zip' });
+	}
+
+	async function uploadZipToR2(playlistId, folder, part, totalParts, blob, songCount) {
+		const CHUNK = 10 * 1024 * 1024; // 10MB
+		if (blob.size < 90 * 1024 * 1024) {
+			// Simple upload
+			const fd = new FormData();
+			fd.append('file', blob, 'songs.zip');
+			fd.append('folder', folder);
+			fd.append('part', String(part));
+			fd.append('totalParts', String(totalParts));
+			fd.append('songCount', String(songCount));
+			await fetch('/api/playlists/' + playlistId + '/zip/upload', { method: 'POST', body: fd });
+		} else {
+			// R2 multipart upload
+			const r2Key = 'zips/playlist-' + playlistId + '/' + (folder || '_all') + '_part' + part + '.zip';
+			const startRes = await fetch('/api/playlists/' + playlistId + '/zip/start', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ key: r2Key })
+			});
+			const { uploadId } = await startRes.json();
+
+			const parts = [];
+			const totalChunks = Math.ceil(blob.size / CHUNK);
+			for (let i = 0; i < totalChunks; i++) {
+				const chunk = blob.slice(i * CHUNK, Math.min((i + 1) * CHUNK, blob.size));
+				const fd = new FormData();
+				fd.append('chunk', chunk);
+				fd.append('uploadId', uploadId);
+				fd.append('key', r2Key);
+				fd.append('partNumber', String(i + 1));
+				const res = await fetch('/api/playlists/' + playlistId + '/zip/part', { method: 'POST', body: fd });
+				const { etag } = await res.json();
+				parts.push({ partNumber: i + 1, etag });
+			}
+
+			await fetch('/api/playlists/' + playlistId + '/zip/complete', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ uploadId, key: r2Key, parts, folder, zipPart: part, totalParts, fileSize: blob.size, songCount })
+			});
+		}
+	}
+
+	async function generateZipsFromFiles(playlistId, files) {
+		const banner = document.getElementById('uploadBanner');
+		const bannerText = document.getElementById('bannerText');
+		const bannerPct = document.getElementById('bannerPct');
+		const bannerBar = document.getElementById('bannerBar');
+		document.getElementById('bannerSpinner').style.display = 'block';
+		banner.className = 'upload-banner active';
+
+		// Group by folder
+		const grouped = {};
+		for (const f of files) {
+			const folder = f.folder || '';
+			if (!grouped[folder]) grouped[folder] = [];
+			grouped[folder].push(f);
+		}
+
+		const folders = Object.keys(grouped);
+		let totalProcessed = 0;
+		const totalFiles = files.length;
+
+		for (const folder of folders) {
+			const folderFiles = grouped[folder];
+			bannerText.textContent = 'Gerando ZIP' + (folder ? ' (' + folder + ')' : '') + '... Calculando checksums';
+
+			// Compute CRC32 for each file and prepare ZIP entries
+			const MAX_PART_SIZE = 2 * 1024 * 1024 * 1024; // 2GB per part
+			let currentEntries = [];
+			let currentSize = 0;
+			let partNum = 1;
+			const allParts = [];
+
+			for (let i = 0; i < folderFiles.length; i++) {
+				const f = folderFiles[i];
+				const ext = f.file.name.split('.').pop() || 'mp3';
+				const zipName = (f.artist || 'Desconhecido') + ' - ' + f.title + '.' + ext;
+				const nameBytes = new TextEncoder().encode(zipName);
+				const crc = await fileCrc32(f.file);
+				const entrySize = 30 + nameBytes.length + f.file.size + 46 + nameBytes.length;
+
+				// Split at 2GB boundary
+				if (currentSize + entrySize > MAX_PART_SIZE && currentEntries.length > 0) {
+					allParts.push([...currentEntries]);
+					currentEntries = [];
+					currentSize = 0;
+					partNum++;
+				}
+
+				currentEntries.push({ nameBytes, crc, fileSize: f.file.size, file: f.file });
+				currentSize += entrySize;
+				totalProcessed++;
+
+				const pct = Math.round((totalProcessed / totalFiles) * 70); // 0-70% for CRC
+				bannerPct.textContent = pct + '%';
+				bannerBar.style.width = pct + '%';
+				bannerText.textContent = 'Gerando ZIP' + (folder ? ' (' + folder + ')' : '') + '... ' + (i + 1) + '/' + folderFiles.length + ' checksums';
+			}
+			if (currentEntries.length > 0) allParts.push(currentEntries);
+
+			// Build and upload each part
+			const totalParts = allParts.length;
+			for (let p = 0; p < totalParts; p++) {
+				bannerText.textContent = 'Montando ZIP' + (folder ? ' (' + folder + ')' : '') + (totalParts > 1 ? ' parte ' + (p + 1) + '/' + totalParts : '') + '...';
+				const zipBlob = buildZipBlob(allParts[p]);
+
+				const uploadPct = 70 + Math.round(((p + 0.5) / totalParts) * 30);
+				bannerPct.textContent = uploadPct + '%';
+				bannerBar.style.width = uploadPct + '%';
+
+				bannerText.textContent = 'Enviando ZIP' + (folder ? ' (' + folder + ')' : '') + (totalParts > 1 ? ' parte ' + (p + 1) + '/' + totalParts : '') + ' (' + (zipBlob.size / (1024 * 1024)).toFixed(0) + ' MB)...';
+				await uploadZipToR2(playlistId, folder, p + 1, totalParts, zipBlob, allParts[p].length);
+			}
+		}
+
+		// Also generate "all songs" ZIP if multiple folders
+		if (folders.length > 1) {
+			bannerText.textContent = 'Gerando ZIP completo...';
+			const allEntries = [];
+			let allSize = 0;
+			let partNum = 1;
+			const allParts = [];
+			const MAX_PART_SIZE = 2 * 1024 * 1024 * 1024;
+
+			for (const f of files) {
+				const ext = f.file.name.split('.').pop() || 'mp3';
+				const zipName = (f.folder ? f.folder + '/' : '') + (f.artist || 'Desconhecido') + ' - ' + f.title + '.' + ext;
+				const nameBytes = new TextEncoder().encode(zipName);
+				// Reuse CRC from folder pass would be ideal but we need to recompute
+				const crc = await fileCrc32(f.file);
+				const entrySize = 30 + nameBytes.length + f.file.size + 46 + nameBytes.length;
+
+				if (allSize + entrySize > MAX_PART_SIZE && allEntries.length > 0) {
+					allParts.push([...allEntries]);
+					allEntries.length = 0;
+					allSize = 0;
+				}
+
+				allEntries.push({ nameBytes, crc, fileSize: f.file.size, file: f.file });
+				allSize += entrySize;
+			}
+			if (allEntries.length > 0) allParts.push(allEntries);
+
+			for (let p = 0; p < allParts.length; p++) {
+				bannerText.textContent = 'Enviando ZIP completo' + (allParts.length > 1 ? ' parte ' + (p + 1) + '/' + allParts.length : '') + '...';
+				const zipBlob = buildZipBlob(allParts[p]);
+				await uploadZipToR2(playlistId, '', p + 1, allParts.length, zipBlob, allParts[p].length);
+			}
+		}
+
+		// Done
+		document.getElementById('bannerSpinner').style.display = 'none';
+		banner.className = 'upload-banner active done';
+		bannerPct.textContent = '100%';
+		bannerBar.style.width = '100%';
+		bannerText.textContent = 'Upload e ZIP concluídos com sucesso!';
 	}
 
 	// Songs management
@@ -927,7 +1193,7 @@ export function renderAdminPage(): string {
 		const data = await res.json();
 
 		if (data.length === 0) {
-			container.innerHTML = '<p style="color:#888;font-size:14px;padding:16px;">Nenhuma musica nesta playlist.</p>';
+			container.innerHTML = '<p style="color:#888;font-size:14px;padding:16px;">Nenhuma música nesta playlist.</p>';
 			return;
 		}
 
@@ -943,7 +1209,7 @@ export function renderAdminPage(): string {
 	}
 
 	async function deleteSong(id) {
-		if (!confirm('Excluir esta musica?')) return;
+		if (!confirm('Excluir esta música?')) return;
 		await fetch('/api/songs/' + id, { method: 'DELETE' });
 		loadSongs();
 	}

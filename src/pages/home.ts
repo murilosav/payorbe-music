@@ -109,7 +109,7 @@ export function renderHomePage(playlists: any[]): string {
 	<div class="container">
 		<header>
 			<h1>Patacos</h1>
-			<p>Suas playlists de musica</p>
+			<p>Suas playlists de música</p>
 		</header>
 		${playlists.length > 0 ? `
 			<div class="playlists-grid">

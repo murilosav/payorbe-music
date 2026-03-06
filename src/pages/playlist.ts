@@ -1,4 +1,4 @@
-export function renderPlaylistPage(playlist: any, songs: any[], accessToken: string): string {
+export function renderPlaylistPage(playlist: any, songs: any[], accessToken: string, zips: any[] = []): string {
 	// Group songs by folder
 	const folders = new Map<string, any[]>();
 	for (const song of songs) {
@@ -6,6 +6,19 @@ export function renderPlaylistPage(playlist: any, songs: any[], accessToken: str
 		if (!folders.has(folder)) folders.set(folder, []);
 		folders.get(folder)!.push(song);
 	}
+
+	// Build ZIP availability map: folder → [{ part, total_parts, file_size }]
+	const zipsByFolder = new Map<string, any[]>();
+	for (const zip of zips) {
+		const f = zip.folder || "";
+		if (!zipsByFolder.has(f)) zipsByFolder.set(f, []);
+		zipsByFolder.get(f)!.push(zip);
+	}
+
+	// Playlist cover as fallback for songs without individual covers
+	const playlistCoverUrl = playlist.cover_r2_key
+		? `/playlist-cover/${playlist.id}?token=${esc(accessToken)}`
+		: "";
 
 	// Get up to 20 songs for preview, prioritizing ones with covers
 	const withCover = songs.filter((s: any) => s.cover_r2_key);
@@ -17,9 +30,11 @@ export function renderPlaylistPage(playlist: any, songs: any[], accessToken: str
 			<div class="preview-cover">
 				${song.cover_r2_key
 					? `<img src="/cover/${song.id}?token=${esc(accessToken)}" alt="${esc(song.title)}" loading="lazy">`
-					: `<div class="cover-placeholder">
-						<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.4"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>
-					</div>`
+					: playlistCoverUrl
+						? `<img src="${playlistCoverUrl}" alt="${esc(song.title)}" loading="lazy">`
+						: `<div class="cover-placeholder">
+							<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.4"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>
+						</div>`
 				}
 			</div>
 			<span class="preview-title">${esc(song.title)}</span>
@@ -27,19 +42,63 @@ export function renderPlaylistPage(playlist: any, songs: any[], accessToken: str
 		</div>
 	`).join("");
 
+	// Helper to format file size
+	function formatSize(bytes: number): string {
+		if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(0) + " KB";
+		if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(0) + " MB";
+		return (bytes / (1024 * 1024 * 1024)).toFixed(1) + " GB";
+	}
+
+	// Generate download buttons for a folder
+	function renderDownloadButtons(folderName: string, isHero: boolean): string {
+		const folderZips = zipsByFolder.get(folderName) || [];
+		const baseUrl = folderName
+			? `/download-zip/${esc(playlist.slug)}/${encodeURIComponent(folderName)}?token=${esc(accessToken)}`
+			: `/download-zip/${esc(playlist.slug)}?token=${esc(accessToken)}`;
+
+		if (folderZips.length === 0) {
+			const cls = isHero ? "btn btn-primary btn-hero btn-disabled" : "btn btn-download btn-disabled";
+			return `<span class="${cls}">ZIP indisponível</span>`;
+		}
+
+		if (folderZips.length === 1 && folderZips[0].total_parts === 1) {
+			const z = folderZips[0];
+			const cls = isHero ? "btn btn-primary btn-hero" : "btn btn-download";
+			const label = isHero ? "Baixar Todas as Músicas (ZIP)" : "Baixar ZIP";
+			return `<a href="${baseUrl}" class="${cls}">
+				<svg width="${isHero ? 20 : 16}" height="${isHero ? 20 : 16}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+				${label}
+				<span class="zip-size">(${formatSize(z.file_size)})</span>
+			</a>`;
+		}
+
+		// Multiple parts
+		return folderZips.map(z => {
+			const cls = isHero ? "btn btn-primary" : "btn btn-download";
+			return `<a href="${baseUrl}&part=${z.part}" class="${cls}">
+				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+				Parte ${z.part} de ${z.total_parts}
+				<span class="zip-size">(${formatSize(z.file_size)})</span>
+			</a>`;
+		}).join("");
+	}
+
 	// Folder sections
 	const folderCards = Array.from(folders.entries()).map(([folderName, folderSongs]) => {
 		const coverSongs = folderSongs.filter((s: any) => s.cover_r2_key).slice(0, 4);
 		const displayName = folderName || playlist.name;
-		const downloadUrl = folderName
-			? `/download-zip/${esc(playlist.slug)}/${encodeURIComponent(folderName)}?token=${esc(accessToken)}`
-			: `/download-zip/${esc(playlist.slug)}?token=${esc(accessToken)}`;
 
-		// Mini cover grid (up to 4 covers)
-		const coverGrid = coverSongs.length > 0
-			? `<div class="folder-covers">${coverSongs.map((s: any) =>
-				`<img src="/cover/${s.id}?token=${esc(accessToken)}" alt="" loading="lazy">`
-			).join("")}</div>`
+		// Mini cover grid (up to 4 covers, using playlist cover as fallback)
+		let coverGridImages = coverSongs.map((s: any) =>
+			`<img src="/cover/${s.id}?token=${esc(accessToken)}" alt="" loading="lazy">`
+		);
+		if (coverGridImages.length < 4 && playlistCoverUrl) {
+			while (coverGridImages.length < 4) {
+				coverGridImages.push(`<img src="${playlistCoverUrl}" alt="" loading="lazy">`);
+			}
+		}
+		const coverGrid = coverGridImages.length > 0
+			? `<div class="folder-covers">${coverGridImages.join("")}</div>`
 			: `<div class="folder-covers folder-covers-empty">
 				<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>
 			</div>`;
@@ -49,19 +108,20 @@ export function renderPlaylistPage(playlist: any, songs: any[], accessToken: str
 				${coverGrid}
 				<div class="folder-details">
 					<h3>${esc(displayName)}</h3>
-					<span class="folder-count">${folderSongs.length} musica${folderSongs.length !== 1 ? "s" : ""}</span>
+					<span class="folder-count">${folderSongs.length} música${folderSongs.length !== 1 ? "s" : ""}</span>
 				</div>
-				<a href="${downloadUrl}" class="btn btn-download">
-					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-					Baixar ZIP
-				</a>
+				<div class="folder-downloads">
+					${renderDownloadButtons(folderName, false)}
+				</div>
 			</div>
 		`;
 	}).join("");
 
 	const totalSongs = songs.length;
 	const totalFolders = folders.size;
-	const downloadAllUrl = `/download-zip/${esc(playlist.slug)}?token=${esc(accessToken)}`;
+
+	// For hero button: use "" folder (all songs ZIP) or the single folder's ZIP
+	const heroFolder = totalFolders === 1 ? Array.from(folders.keys())[0] : "";
 
 	return `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -78,37 +138,30 @@ export function renderPlaylistPage(playlist: any, songs: any[], accessToken: str
 		<header>
 			<span class="brand">Patacos</span>
 			<h1>${esc(playlist.name)}</h1>
-			<p class="welcome">Obrigado pela sua compra! Aqui estao suas musicas prontas para download. Esperamos que voce aproveite cada faixa.</p>
+			<p class="welcome">Obrigado pela sua compra! Aqui estão suas músicas prontas para download. Esperamos que você aproveite cada faixa.</p>
 			${playlist.description ? `<p class="description">${esc(playlist.description)}</p>` : ""}
 			<div class="stats">
-				<span>${totalSongs} musica${totalSongs !== 1 ? "s" : ""}</span>
+				<span>${totalSongs} música${totalSongs !== 1 ? "s" : ""}</span>
 				${totalFolders > 1 ? `<span class="dot"></span><span>${totalFolders} pastas</span>` : ""}
 			</div>
-			<a href="${downloadAllUrl}" class="btn btn-primary btn-hero">
-				<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-				Baixar Todas as Musicas (ZIP)
-			</a>
+			<div class="hero-downloads">
+				${renderDownloadButtons(heroFolder, true)}
+			</div>
 		</header>
 
 		${previewSongs.length > 0 ? `
 		<section class="preview-section">
-			<h2>Uma amostra do que voce adquiriu</h2>
+			<h2>Uma amostra do que você adquiriu</h2>
 			<div class="preview-grid">
 				${previewGrid}
 			</div>
-			${songs.length > 20 ? `<p class="preview-note">Mostrando ${previewSongs.length} de ${songs.length} musicas. Baixe para ter acesso a todas.</p>` : ""}
+			${songs.length > 20 ? `<p class="preview-note">Mostrando ${previewSongs.length} de ${songs.length} músicas. Baixe para ter acesso a todas.</p>` : ""}
 		</section>
 		` : ""}
 
 		<section class="folders-section">
 			<div class="folders-header">
 				<h2>${totalFolders > 1 ? "Pastas para Download" : "Download"}</h2>
-				${totalFolders > 1 ? `
-					<a href="${downloadAllUrl}" class="btn btn-primary">
-						<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-						Baixar Tudo (ZIP)
-					</a>
-				` : ""}
 			</div>
 			<div class="folders-grid">
 				${folderCards}
@@ -165,6 +218,13 @@ function getStyles(): string {
 		margin-bottom: 8px;
 	}
 
+	.welcome {
+		color: #555;
+		font-size: 15px;
+		line-height: 1.6;
+		margin-bottom: 12px;
+	}
+
 	.description {
 		color: #666;
 		font-size: 15px;
@@ -182,15 +242,14 @@ function getStyles(): string {
 
 	.dot { width: 3px; height: 3px; background: #ccc; border-radius: 50%; }
 
-	.welcome {
-		color: #555;
-		font-size: 15px;
-		line-height: 1.6;
-		margin-bottom: 12px;
+	.hero-downloads {
+		margin-top: 20px;
+		display: flex;
+		flex-wrap: wrap;
+		gap: 10px;
 	}
 
 	.btn-hero {
-		margin-top: 20px;
 		padding: 14px 28px;
 		font-size: 16px;
 	}
@@ -347,6 +406,18 @@ function getStyles(): string {
 		color: #888;
 	}
 
+	.folder-downloads {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+		flex-shrink: 0;
+	}
+
+	.zip-size {
+		font-size: 11px;
+		opacity: 0.7;
+	}
+
 	/* Buttons */
 	.btn {
 		display: inline-flex;
@@ -373,20 +444,27 @@ function getStyles(): string {
 	.btn-download {
 		background: #f0f0f0;
 		color: #333;
-		flex-shrink: 0;
 		padding: 10px 16px;
 		font-size: 13px;
 	}
 
 	.btn-download:hover { background: #e5e5e5; }
 
+	.btn-disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+		pointer-events: none;
+	}
+
 	/* Responsive */
 	@media (max-width: 640px) {
 		header h1 { font-size: 26px; }
 		.preview-grid { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 12px; }
 		.folder-card { flex-wrap: wrap; }
-		.folders-header { flex-direction: column; gap: 12px; align-items: stretch; }
-		.folders-header .btn { text-align: center; justify-content: center; }
+		.folder-downloads { width: 100%; }
+		.folder-downloads .btn { flex: 1; justify-content: center; }
+		.hero-downloads { flex-direction: column; }
+		.hero-downloads .btn { text-align: center; justify-content: center; }
 	}
 	`;
 }

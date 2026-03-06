@@ -3,7 +3,6 @@ import { renderPlaylistPage } from "./pages/playlist";
 import { renderHomePage } from "./pages/home";
 import { renderAdminPage } from "./pages/admin";
 import { verifyAuth, handleLogin, handleLogout } from "./auth";
-import { createZipStream } from "./zip";
 
 export interface Env {
 	DB: D1Database;
@@ -53,6 +52,27 @@ export default {
 				return new Response(response.body, { status: response.status, headers: newHeaders });
 			}
 
+			// Playlist cover image (requires token)
+			if (path.startsWith("/playlist-cover/")) {
+				const playlistId = parseInt(path.split("/")[2]);
+				if (isNaN(playlistId) || !token) return new Response(null, { status: 403 });
+
+				const playlist = await env.DB.prepare(
+					"SELECT cover_r2_key FROM playlists WHERE id = ? AND access_token = ?"
+				).bind(playlistId, token).first<{ cover_r2_key: string }>();
+				if (!playlist || !playlist.cover_r2_key) return new Response(null, { status: 404 });
+
+				const object = await env.MUSIC_BUCKET.get(playlist.cover_r2_key);
+				if (!object) return new Response(null, { status: 404 });
+
+				return new Response(object.body, {
+					headers: {
+						"Content-Type": object.httpMetadata?.contentType || "image/jpeg",
+						"Cache-Control": "private, max-age=86400",
+					},
+				});
+			}
+
 			// Cover image (requires token)
 			if (path.startsWith("/cover/")) {
 				const songId = parseInt(path.split("/")[2]);
@@ -94,65 +114,42 @@ export default {
 				});
 			}
 
-			// Download ZIP - entire playlist or specific folder
+			// Download ZIP - serve pre-built ZIP from R2
 			if (path.startsWith("/download-zip/")) {
 				if (!token) return new Response("Access denied", { status: 403 });
 
 				const parts = path.slice("/download-zip/".length).split("/");
 				const slug = parts[0];
 				const folder = decodeURIComponent(parts.slice(1).join("/") || "");
+				const zipPart = parseInt(url.searchParams.get("part") || "1");
 
 				const playlist = await env.DB.prepare(
 					"SELECT id, name FROM playlists WHERE slug = ? AND access_token = ?"
 				).bind(slug, token).first<{ id: number; name: string }>();
 				if (!playlist) return new Response("Access denied", { status: 403 });
 
-				let songs;
-				let zipName: string;
-				if (folder) {
-					songs = await env.DB.prepare(
-						"SELECT id, title, artist, r2_key FROM songs WHERE playlist_id = ? AND folder = ? ORDER BY track_number, title"
-					).bind(playlist.id, folder).all();
-					zipName = `${playlist.name} - ${folder}.zip`;
-				} else {
-					songs = await env.DB.prepare(
-						"SELECT id, title, artist, r2_key, folder FROM songs WHERE playlist_id = ? ORDER BY folder, track_number, title"
-					).bind(playlist.id).all();
-					zipName = `${playlist.name}.zip`;
+				const zip = await env.DB.prepare(
+					"SELECT r2_key, file_size, total_parts FROM playlist_zips WHERE playlist_id = ? AND folder = ? AND part = ?"
+				).bind(playlist.id, folder, zipPart).first<{ r2_key: string; file_size: number; total_parts: number }>();
+
+				if (!zip) {
+					return new Response(renderZipUnavailable(), {
+						status: 404, headers: { "content-type": "text/html; charset=utf-8" },
+					});
 				}
 
-				if (!songs.results.length) return new Response("No songs found", { status: 404 });
+				const object = await env.MUSIC_BUCKET.get(zip.r2_key);
+				if (!object) return new Response("ZIP not found", { status: 404 });
 
-				// Build ZIP entries (lazy - streams from R2 on demand)
-				const entries = songs.results.map((s: any) => {
-					const ext = s.r2_key.split(".").pop() || "mp3";
-					const name = folder
-						? `${s.artist} - ${s.title}.${ext}`
-						: `${s.folder ? s.folder + "/" : ""}${s.artist} - ${s.title}.${ext}`;
-					return {
-						name,
-						size: 0, // not used for streaming
-						get data() {
-							return env.MUSIC_BUCKET.get(s.r2_key).then(obj => obj!.body);
-						},
-					};
-				});
+				let zipName = folder ? `${playlist.name} - ${folder}` : playlist.name;
+				if (zip.total_parts > 1) zipName += ` (Parte ${zipPart} de ${zip.total_parts})`;
+				zipName += ".zip";
 
-				// Create streaming ZIP - fetch R2 objects lazily
-				const zipEntries = [];
-				for (const entry of entries) {
-					const body = await entry.data;
-					if (body) {
-						zipEntries.push({ name: entry.name, data: body, size: 0 });
-					}
-				}
-
-				const zipStream = createZipStream(zipEntries);
-
-				return new Response(zipStream, {
+				return new Response(object.body, {
 					headers: {
 						"Content-Type": "application/zip",
 						"Content-Disposition": `attachment; filename="${encodeURIComponent(zipName)}"`,
+						"Content-Length": String(zip.file_size),
 					},
 				});
 			}
@@ -190,11 +187,16 @@ export default {
 					});
 				}
 
-				const songs = await env.DB.prepare(
-					"SELECT * FROM songs WHERE playlist_id = ? ORDER BY folder, track_number, title"
-				).bind(playlist.id).all();
+				const [songs, zips] = await Promise.all([
+					env.DB.prepare(
+						"SELECT * FROM songs WHERE playlist_id = ? ORDER BY folder, track_number, title"
+					).bind(playlist.id).all(),
+					env.DB.prepare(
+						"SELECT folder, part, total_parts, file_size, song_count FROM playlist_zips WHERE playlist_id = ? ORDER BY folder, part"
+					).bind(playlist.id).all(),
+				]);
 
-				return new Response(renderPlaylistPage(playlist, songs.results, token), {
+				return new Response(renderPlaylistPage(playlist, songs.results, token, zips.results), {
 					headers: { "content-type": "text/html; charset=utf-8" },
 				});
 			}
@@ -225,6 +227,26 @@ function renderAccessDenied(): string {
 	p{font-size:14px;color:#888}
 	</style>
 </head>
-<body><div class="card"><h1>Acesso Negado</h1><p>Este link e invalido ou expirou. Entre em contato com o vendedor.</p></div></body>
+<body><div class="card"><h1>Acesso Negado</h1><p>Este link é inválido ou expirou. Entre em contato com o vendedor.</p></div></body>
+</html>`;
+}
+
+function renderZipUnavailable(): string {
+	return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>ZIP Indisponível</title>
+	<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+	<style>
+	*{margin:0;padding:0;box-sizing:border-box}
+	body{font-family:'Inter',sans-serif;background:#fafafa;display:flex;align-items:center;justify-content:center;min-height:100vh}
+	.card{text-align:center;padding:48px}
+	h1{font-size:20px;margin-bottom:8px;color:#1a1a1a}
+	p{font-size:14px;color:#888}
+	</style>
+</head>
+<body><div class="card"><h1>ZIP Indisponível</h1><p>O arquivo ZIP ainda está sendo preparado. Tente novamente em alguns minutos.</p></div></body>
 </html>`;
 }

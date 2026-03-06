@@ -37,22 +37,192 @@ export async function handleApi(request: Request, env: Env, path: string): Promi
 	const playlistDeleteMatch = path.match(/^\/api\/playlists\/(\d+)$/);
 	if (playlistDeleteMatch && request.method === "DELETE") {
 		const id = parseInt(playlistDeleteMatch[1]);
+		const playlist = await env.DB.prepare("SELECT cover_r2_key FROM playlists WHERE id = ?")
+			.bind(id).first<{ cover_r2_key: string }>();
 		const songs = await env.DB.prepare("SELECT r2_key, cover_r2_key FROM songs WHERE playlist_id = ?").bind(id).all();
 
-		// Delete all R2 objects in parallel
+		// Also get ZIPs to delete
+		const zips = await env.DB.prepare("SELECT r2_key FROM playlist_zips WHERE playlist_id = ?").bind(id).all();
+
+		// Delete all R2 objects in parallel (songs, covers, playlist cover, ZIPs)
 		const deletePromises: Promise<void>[] = [];
+		if (playlist?.cover_r2_key) deletePromises.push(env.MUSIC_BUCKET.delete(playlist.cover_r2_key));
 		for (const song of songs.results) {
 			const s = song as { r2_key: string; cover_r2_key: string };
 			if (s.r2_key) deletePromises.push(env.MUSIC_BUCKET.delete(s.r2_key));
 			if (s.cover_r2_key) deletePromises.push(env.MUSIC_BUCKET.delete(s.cover_r2_key));
+		}
+		for (const zip of zips.results) {
+			deletePromises.push(env.MUSIC_BUCKET.delete((zip as any).r2_key));
 		}
 		await Promise.all(deletePromises);
 
 		// Delete from DB in parallel
 		await Promise.all([
 			env.DB.prepare("DELETE FROM songs WHERE playlist_id = ?").bind(id).run(),
+			env.DB.prepare("DELETE FROM playlist_zips WHERE playlist_id = ?").bind(id).run(),
 			env.DB.prepare("DELETE FROM playlists WHERE id = ?").bind(id).run(),
 		]);
+		return json({ success: true });
+	}
+
+	// GET /api/playlists/:id/cover-preview - Get playlist cover (admin only)
+	const playlistCoverPreviewMatch = path.match(/^\/api\/playlists\/(\d+)\/cover-preview$/);
+	if (playlistCoverPreviewMatch && request.method === "GET") {
+		const id = parseInt(playlistCoverPreviewMatch[1]);
+		const playlist = await env.DB.prepare("SELECT cover_r2_key FROM playlists WHERE id = ?")
+			.bind(id).first<{ cover_r2_key: string }>();
+		if (!playlist || !playlist.cover_r2_key) return new Response(null, { status: 404 });
+
+		const object = await env.MUSIC_BUCKET.get(playlist.cover_r2_key);
+		if (!object) return new Response(null, { status: 404 });
+
+		return new Response(object.body, {
+			headers: {
+				"Content-Type": object.httpMetadata?.contentType || "image/jpeg",
+				"Cache-Control": "private, max-age=300",
+			},
+		});
+	}
+
+	// POST /api/playlists/:id/cover - Upload playlist cover image
+	const playlistCoverMatch = path.match(/^\/api\/playlists\/(\d+)\/cover$/);
+	if (playlistCoverMatch && request.method === "POST") {
+		const id = parseInt(playlistCoverMatch[1]);
+		const formData = await request.formData();
+		const file = formData.get("file") as File | null;
+		if (!file) return json({ error: "file required" }, 400);
+
+		const playlist = await env.DB.prepare("SELECT slug, cover_r2_key FROM playlists WHERE id = ?")
+			.bind(id).first<{ slug: string; cover_r2_key: string }>();
+		if (!playlist) return json({ error: "Playlist not found" }, 404);
+
+		// Delete old cover if exists
+		if (playlist.cover_r2_key) {
+			await env.MUSIC_BUCKET.delete(playlist.cover_r2_key);
+		}
+
+		const ext = file.type === "image/png" ? "png" : "jpg";
+		const coverKey = `playlists/${playlist.slug}/cover.${ext}`;
+		await env.MUSIC_BUCKET.put(coverKey, file.stream(), {
+			httpMetadata: { contentType: file.type || "image/jpeg" },
+		});
+
+		await env.DB.prepare("UPDATE playlists SET cover_r2_key = ? WHERE id = ?").bind(coverKey, id).run();
+		return json({ success: true, cover_r2_key: coverKey });
+	}
+
+	// DELETE /api/playlists/:id/cover - Remove playlist cover
+	if (playlistCoverMatch && request.method === "DELETE") {
+		const id = parseInt(playlistCoverMatch[1]);
+		const playlist = await env.DB.prepare("SELECT cover_r2_key FROM playlists WHERE id = ?")
+			.bind(id).first<{ cover_r2_key: string }>();
+		if (!playlist) return json({ error: "Playlist not found" }, 404);
+
+		if (playlist.cover_r2_key) {
+			await env.MUSIC_BUCKET.delete(playlist.cover_r2_key);
+			await env.DB.prepare("UPDATE playlists SET cover_r2_key = '' WHERE id = ?").bind(id).run();
+		}
+		return json({ success: true });
+	}
+
+	// --- ZIP Management ---
+	const zipMatch = path.match(/^\/api\/playlists\/(\d+)\/zip\/(start|part|complete|upload)$/);
+	if (zipMatch) {
+		const id = parseInt(zipMatch[1]);
+		const action = zipMatch[2];
+
+		// POST /api/playlists/:id/zip/upload - Simple upload for ZIPs < 90MB
+		if (action === "upload" && request.method === "POST") {
+			const formData = await request.formData();
+			const file = formData.get("file") as File;
+			const folder = formData.get("folder") as string || "";
+			const part = parseInt(formData.get("part") as string || "1");
+			const totalParts = parseInt(formData.get("totalParts") as string || "1");
+			const songCount = parseInt(formData.get("songCount") as string || "0");
+
+			const r2Key = `zips/playlist-${id}/${folder || "_all"}_part${part}.zip`;
+			await env.MUSIC_BUCKET.put(r2Key, file.stream(), {
+				httpMetadata: { contentType: "application/zip" },
+			});
+
+			await env.DB.prepare(
+				"DELETE FROM playlist_zips WHERE playlist_id = ? AND folder = ? AND part = ?"
+			).bind(id, folder, part).run();
+
+			await env.DB.prepare(
+				"INSERT INTO playlist_zips (playlist_id, folder, part, total_parts, r2_key, file_size, song_count) VALUES (?, ?, ?, ?, ?, ?, ?)"
+			).bind(id, folder, part, totalParts, r2Key, file.size, songCount).run();
+
+			return json({ success: true });
+		}
+
+		// POST /api/playlists/:id/zip/start - Start R2 multipart upload
+		if (action === "start" && request.method === "POST") {
+			const body = await request.json<{ key: string }>();
+			const upload = await env.MUSIC_BUCKET.createMultipartUpload(body.key, {
+				httpMetadata: { contentType: "application/zip" },
+			});
+			return json({ uploadId: upload.uploadId });
+		}
+
+		// POST /api/playlists/:id/zip/part - Upload chunk of multipart
+		if (action === "part" && request.method === "POST") {
+			const formData = await request.formData();
+			const chunk = formData.get("chunk") as File;
+			const uploadId = formData.get("uploadId") as string;
+			const key = formData.get("key") as string;
+			const partNumber = parseInt(formData.get("partNumber") as string);
+
+			const upload = env.MUSIC_BUCKET.resumeMultipartUpload(key, uploadId);
+			const uploaded = await upload.uploadPart(partNumber, chunk.stream());
+			return json({ etag: uploaded.etag });
+		}
+
+		// POST /api/playlists/:id/zip/complete - Complete multipart upload
+		if (action === "complete" && request.method === "POST") {
+			const body = await request.json<{
+				uploadId: string; key: string;
+				parts: { partNumber: number; etag: string }[];
+				folder: string; zipPart: number; totalParts: number;
+				fileSize: number; songCount: number;
+			}>();
+
+			const upload = env.MUSIC_BUCKET.resumeMultipartUpload(body.key, body.uploadId);
+			await upload.complete(body.parts);
+
+			await env.DB.prepare(
+				"DELETE FROM playlist_zips WHERE playlist_id = ? AND folder = ? AND part = ?"
+			).bind(id, body.folder || "", body.zipPart || 1).run();
+
+			await env.DB.prepare(
+				"INSERT INTO playlist_zips (playlist_id, folder, part, total_parts, r2_key, file_size, song_count) VALUES (?, ?, ?, ?, ?, ?, ?)"
+			).bind(id, body.folder || "", body.zipPart || 1, body.totalParts || 1, body.key, body.fileSize || 0, body.songCount || 0).run();
+
+			return json({ success: true });
+		}
+	}
+
+	// GET /api/playlists/:id/zips - Get ZIP status
+	const zipsListMatch = path.match(/^\/api\/playlists\/(\d+)\/zips$/);
+	if (zipsListMatch && request.method === "GET") {
+		const id = parseInt(zipsListMatch[1]);
+		const { results } = await env.DB.prepare(
+			"SELECT * FROM playlist_zips WHERE playlist_id = ? ORDER BY folder, part"
+		).bind(id).all();
+		return json(results);
+	}
+
+	// DELETE /api/playlists/:id/zips - Delete all ZIPs for a playlist
+	if (zipsListMatch && request.method === "DELETE") {
+		const id = parseInt(zipsListMatch[1]);
+		const { results } = await env.DB.prepare(
+			"SELECT r2_key FROM playlist_zips WHERE playlist_id = ?"
+		).bind(id).all();
+
+		const deletes = results.map((z: any) => env.MUSIC_BUCKET.delete(z.r2_key));
+		deletes.push(env.DB.prepare("DELETE FROM playlist_zips WHERE playlist_id = ?").bind(id).run() as any);
+		await Promise.all(deletes);
 		return json({ success: true });
 	}
 
