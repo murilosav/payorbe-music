@@ -1,5 +1,6 @@
 import { handleApi } from "./api";
 import { renderPlaylistPage } from "./pages/playlist";
+import { renderFolderPage } from "./pages/folder";
 import { renderHomePage } from "./pages/home";
 import { renderAdminPage } from "./pages/admin";
 import { verifyAuth, handleLogin, handleLogout } from "./auth";
@@ -127,9 +128,18 @@ export default {
 				const folder = decodeURIComponent(parts.slice(1).join("/") || "");
 				const zipPart = parseInt(url.searchParams.get("part") || "1");
 
-				const playlist = await env.DB.prepare(
+				// Check playlist token directly, or via folder token
+				let playlist = await env.DB.prepare(
 					"SELECT id, name FROM playlists WHERE slug = ? AND access_token = ?"
 				).bind(slug, token).first<{ id: number; name: string }>();
+				if (!playlist) {
+					// Check if token belongs to a folder containing this playlist
+					playlist = await env.DB.prepare(
+						`SELECT p.id, p.name FROM playlists p
+						 JOIN folders f ON p.folder_id = f.id
+						 WHERE p.slug = ? AND f.access_token = ?`
+					).bind(slug, token).first<{ id: number; name: string }>();
+				}
 				if (!playlist) return new Response("Access denied", { status: 403 });
 
 				const zip = await env.DB.prepare(
@@ -176,29 +186,59 @@ export default {
 				});
 			}
 
-			// Playlist page: /:slug?token=xxxxx
+			// Playlist or Folder page: /:slug?token=xxxxx
 			const slug = path.slice(1).split("/")[0];
 			if (slug) {
-				const playlist = await env.DB.prepare(
-					"SELECT * FROM playlists WHERE slug = ? AND access_token = ?"
-				).bind(slug, token).first();
-				if (!playlist) {
-					return new Response(renderAccessDenied(), {
-						status: 403, headers: { "content-type": "text/html; charset=utf-8" },
+				// Check playlist first, then folder
+				const [playlist, folder] = await Promise.all([
+					env.DB.prepare("SELECT * FROM playlists WHERE slug = ? AND access_token = ?").bind(slug, token).first(),
+					env.DB.prepare("SELECT * FROM folders WHERE slug = ? AND access_token = ?").bind(slug, token).first(),
+				]);
+
+				if (playlist) {
+					const [songs, zips] = await Promise.all([
+						env.DB.prepare(
+							"SELECT * FROM songs WHERE playlist_id = ? ORDER BY folder, track_number, title"
+						).bind(playlist.id).all(),
+						env.DB.prepare(
+							"SELECT folder, part, total_parts, file_size, song_count FROM playlist_zips WHERE playlist_id = ? ORDER BY folder, part"
+						).bind(playlist.id).all(),
+					]);
+					return new Response(renderPlaylistPage(playlist, songs.results, token, zips.results), {
+						headers: { "content-type": "text/html; charset=utf-8" },
 					});
 				}
 
-				const [songs, zips] = await Promise.all([
-					env.DB.prepare(
-						"SELECT * FROM songs WHERE playlist_id = ? ORDER BY folder, track_number, title"
-					).bind(playlist.id).all(),
-					env.DB.prepare(
-						"SELECT folder, part, total_parts, file_size, song_count FROM playlist_zips WHERE playlist_id = ? ORDER BY folder, part"
-					).bind(playlist.id).all(),
-				]);
+				if (folder) {
+					// Get all playlists in this folder
+					const playlists = await env.DB.prepare(
+						"SELECT * FROM playlists WHERE folder_id = ? ORDER BY name"
+					).bind(folder.id).all();
 
-				return new Response(renderPlaylistPage(playlist, songs.results, token, zips.results), {
-					headers: { "content-type": "text/html; charset=utf-8" },
+					// Get songs and zips for each playlist in parallel
+					const [songsResults, zipsResults] = await Promise.all([
+						Promise.all(playlists.results.map((p: any) =>
+							env.DB.prepare("SELECT * FROM songs WHERE playlist_id = ? ORDER BY folder, track_number, title").bind(p.id).all()
+						)),
+						Promise.all(playlists.results.map((p: any) =>
+							env.DB.prepare("SELECT folder, part, total_parts, file_size, song_count FROM playlist_zips WHERE playlist_id = ? ORDER BY folder, part").bind(p.id).all()
+						)),
+					]);
+
+					const allSongs = new Map<number, any[]>();
+					const allZips = new Map<number, any[]>();
+					playlists.results.forEach((p: any, i: number) => {
+						allSongs.set(p.id, songsResults[i].results);
+						allZips.set(p.id, zipsResults[i].results);
+					});
+
+					return new Response(renderFolderPage(folder, playlists.results, allSongs, allZips, token), {
+						headers: { "content-type": "text/html; charset=utf-8" },
+					});
+				}
+
+				return new Response(renderAccessDenied(), {
+					status: 403, headers: { "content-type": "text/html; charset=utf-8" },
 				});
 			}
 

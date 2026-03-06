@@ -7,6 +7,77 @@ export async function handleApi(request: Request, env: Env, path: string): Promi
 			headers: { "content-type": "application/json" },
 		});
 
+	// --- Folders ---
+	// GET /api/folders
+	if (path === "/api/folders" && request.method === "GET") {
+		const { results } = await env.DB.prepare(
+			`SELECT f.*,
+				(SELECT COUNT(*) FROM playlists WHERE folder_id = f.id) as playlist_count
+			FROM folders f ORDER BY f.name`
+		).all();
+		return json(results);
+	}
+
+	// POST /api/folders
+	if (path === "/api/folders" && request.method === "POST") {
+		const body = await request.json<{ name: string; slug: string; description?: string }>();
+		if (!body.name || !body.slug) return json({ error: "name and slug required" }, 400);
+
+		const slug = body.slug.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+
+		// Ensure slug is unique across folders AND playlists
+		const [existingFolder, existingPlaylist] = await Promise.all([
+			env.DB.prepare("SELECT id FROM folders WHERE slug = ?").bind(slug).first(),
+			env.DB.prepare("SELECT id FROM playlists WHERE slug = ?").bind(slug).first(),
+		]);
+		if (existingFolder || existingPlaylist) return json({ error: "Slug j\u00e1 em uso" }, 409);
+
+		const tokenBytes = new Uint8Array(32);
+		crypto.getRandomValues(tokenBytes);
+		const accessToken = Array.from(tokenBytes).map(b => b.toString(16).padStart(2, "0")).join("");
+
+		await env.DB.prepare(
+			"INSERT INTO folders (name, slug, description, access_token) VALUES (?, ?, ?, ?)"
+		).bind(body.name, slug, body.description || "", accessToken).run();
+
+		const folder = await env.DB.prepare("SELECT * FROM folders WHERE slug = ?").bind(slug).first();
+		return json(folder, 201);
+	}
+
+	// PUT/DELETE /api/folders/:id
+	const folderMatch = path.match(/^\/api\/folders\/(\d+)$/);
+	if (folderMatch && request.method === "PUT") {
+		const id = parseInt(folderMatch[1]);
+		const body = await request.json<{ name?: string; description?: string }>();
+		const fields: string[] = [];
+		const values: any[] = [];
+		if (body.name !== undefined) { fields.push("name = ?"); values.push(body.name); }
+		if (body.description !== undefined) { fields.push("description = ?"); values.push(body.description); }
+		if (fields.length === 0) return json({ error: "No fields to update" }, 400);
+		values.push(id);
+		await env.DB.prepare(`UPDATE folders SET ${fields.join(", ")} WHERE id = ?`).bind(...values).run();
+		const folder = await env.DB.prepare("SELECT * FROM folders WHERE id = ?").bind(id).first();
+		return json(folder);
+	}
+
+	if (folderMatch && request.method === "DELETE") {
+		const id = parseInt(folderMatch[1]);
+		// Unlink playlists from folder (don't delete them)
+		await env.DB.prepare("UPDATE playlists SET folder_id = NULL WHERE folder_id = ?").bind(id).run();
+		await env.DB.prepare("DELETE FROM folders WHERE id = ?").bind(id).run();
+		return json({ success: true });
+	}
+
+	// PATCH /api/playlists/:id/folder - Move playlist to/from folder
+	const moveMatch = path.match(/^\/api\/playlists\/(\d+)\/folder$/);
+	if (moveMatch && request.method === "PATCH") {
+		const id = parseInt(moveMatch[1]);
+		const body = await request.json<{ folder_id: number | null }>();
+		await env.DB.prepare("UPDATE playlists SET folder_id = ? WHERE id = ?")
+			.bind(body.folder_id, id).run();
+		return json({ success: true });
+	}
+
 	// --- Playlists ---
 	// GET /api/playlists (with stats)
 	if (path === "/api/playlists" && request.method === "GET") {
@@ -25,6 +96,14 @@ export async function handleApi(request: Request, env: Env, path: string): Promi
 		if (!body.name || !body.slug) return json({ error: "name and slug required" }, 400);
 
 		const slug = body.slug.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+
+		// Ensure slug is unique across playlists AND folders
+		const [existingP, existingF] = await Promise.all([
+			env.DB.prepare("SELECT id FROM playlists WHERE slug = ?").bind(slug).first(),
+			env.DB.prepare("SELECT id FROM folders WHERE slug = ?").bind(slug).first(),
+		]);
+		if (existingP || existingF) return json({ error: "Slug j\u00e1 em uso" }, 409);
+
 		// Generate secure random access token
 		const tokenBytes = new Uint8Array(32);
 		crypto.getRandomValues(tokenBytes);

@@ -141,22 +141,28 @@ export function renderAdminPage(): string {
 
 		<!-- ==================== LIST VIEW ==================== -->
 		<div id="listView">
+			<!-- Create Folder Form -->
+			<div class="card" id="createFolderForm" style="display:none;">
+				<div style="font-weight:600;margin-bottom:12px;">Nova Pasta</div>
+				<div class="form-row">
+					<div class="form-group"><label>Nome</label><input type="text" id="folderName" placeholder="Ex: Pacote Rock"></div>
+					<div class="form-group"><label>Slug (URL)</label><input type="text" id="folderSlug" placeholder="Ex: pacote-rock"></div>
+				</div>
+				<div class="form-group"><label>Descri\u00e7\u00e3o</label><input type="text" id="folderDesc" placeholder="Descri\u00e7\u00e3o da pasta"></div>
+				<div style="display:flex;gap:8px;">
+					<button class="btn btn-primary" onclick="createFolder()">Criar Pasta</button>
+					<button class="btn btn-ghost" onclick="toggleCreateFolderForm()">Cancelar</button>
+				</div>
+			</div>
+
+			<!-- Create Playlist Form -->
 			<div class="card" id="createForm" style="display:none;">
 				<div style="font-weight:600;margin-bottom:12px;">Nova Playlist</div>
 				<div class="form-row">
-					<div class="form-group">
-						<label>Nome</label>
-						<input type="text" id="playlistName" placeholder="Ex: Gospel Hits 2026">
-					</div>
-					<div class="form-group">
-						<label>Slug (URL)</label>
-						<input type="text" id="playlistSlug" placeholder="Ex: gospel-hits">
-					</div>
+					<div class="form-group"><label>Nome</label><input type="text" id="playlistName" placeholder="Ex: Gospel Hits 2026"></div>
+					<div class="form-group"><label>Slug (URL)</label><input type="text" id="playlistSlug" placeholder="Ex: gospel-hits"></div>
 				</div>
-				<div class="form-group">
-					<label>Descri\u00e7\u00e3o</label>
-					<input type="text" id="playlistDesc" placeholder="Descri\u00e7\u00e3o da playlist">
-				</div>
+				<div class="form-group"><label>Descri\u00e7\u00e3o</label><input type="text" id="playlistDesc" placeholder="Descri\u00e7\u00e3o da playlist"></div>
 				<div style="display:flex;gap:8px;">
 					<button class="btn btn-primary" onclick="createPlaylist()">Criar Playlist</button>
 					<button class="btn btn-ghost" onclick="toggleCreateForm()">Cancelar</button>
@@ -165,7 +171,10 @@ export function renderAdminPage(): string {
 
 			<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
 				<span style="font-size:14px;color:#888;" id="playlistCount"></span>
-				<button class="btn btn-primary" onclick="toggleCreateForm()" id="createToggleBtn">+ Nova Playlist</button>
+				<div style="display:flex;gap:8px;">
+					<button class="btn btn-ghost" onclick="toggleCreateFolderForm()" id="createFolderToggleBtn">+ Nova Pasta</button>
+					<button class="btn btn-primary" onclick="toggleCreateForm()" id="createToggleBtn">+ Nova Playlist</button>
+				</div>
 			</div>
 
 			<div id="playlistsList"></div>
@@ -194,7 +203,10 @@ export function renderAdminPage(): string {
 							<div class="form-group"><label>Nome</label><input type="text" id="detailName" oninput="onDetailChange()"></div>
 							<div class="form-group"><label>Slug</label><input type="text" id="detailSlug" disabled style="background:#f8f8f8;color:#888;"></div>
 						</div>
-						<div class="form-group"><label>Descri\u00e7\u00e3o</label><input type="text" id="detailDesc" oninput="onDetailChange()"></div>
+						<div class="form-row">
+							<div class="form-group" style="flex:2;"><label>Descri\u00e7\u00e3o</label><input type="text" id="detailDesc" oninput="onDetailChange()"></div>
+							<div class="form-group" style="flex:1;"><label>Pasta</label><select id="detailFolder" onchange="movePlaylistToFolder()"><option value="">Sem pasta</option></select></div>
+						</div>
 					</div>
 				</div>
 				<div style="display:flex;align-items:center;gap:6px;margin-top:12px;">
@@ -288,6 +300,7 @@ export function renderAdminPage(): string {
 	// ===== State =====
 	let playlistsCache = [];
 	let zipsCache = [];
+	let foldersCache = [];
 	let currentPlaylist = null;
 	let currentZips = [];
 	let currentSongs = [];
@@ -311,6 +324,19 @@ export function renderAdminPage(): string {
 	}
 
 	// ===== View Management =====
+	function toggleCreateFolderForm() {
+		var form = document.getElementById('createFolderForm');
+		var btn = document.getElementById('createFolderToggleBtn');
+		if (form.style.display === 'none') {
+			form.style.display = 'block';
+			btn.style.display = 'none';
+			document.getElementById('folderName').focus();
+		} else {
+			form.style.display = 'none';
+			btn.style.display = 'inline-flex';
+		}
+	}
+
 	function toggleCreateForm() {
 		const form = document.getElementById('createForm');
 		const btn = document.getElementById('createToggleBtn');
@@ -352,6 +378,13 @@ export function renderAdminPage(): string {
 
 		document.getElementById('saveBtn').style.display = 'none';
 
+		// Fill folder dropdown
+		var folderSel = document.getElementById('detailFolder');
+		folderSel.innerHTML = '<option value="">Sem pasta</option>' +
+			foldersCache.map(function(f) {
+				return '<option value="' + f.id + '"' + (playlist.folder_id === f.id ? ' selected' : '') + '>' + f.name + '</option>';
+			}).join('');
+
 		// Reset upload
 		pendingFiles = [];
 		document.getElementById('uploadSummary').style.display = 'none';
@@ -376,71 +409,123 @@ export function renderAdminPage(): string {
 	}
 
 	// ===== Playlist List =====
+	function renderPlaylistCard(p, idx) {
+		var zips = zipsCache[idx] || [];
+		var songCount = p.song_count || 0;
+		var totalSizeMB = ((p.total_size || 0) / (1024 * 1024)).toFixed(0);
+		var totalZipSize = zips.reduce(function(s, z) { return s + (z.file_size || 0); }, 0);
+		var zipSizeMB = (totalZipSize / (1024 * 1024)).toFixed(0);
+		var zipSongCount = zips.reduce(function(s, z) { return s + (z.song_count || 0); }, 0);
+
+		var zipBadge = '';
+		if (songCount === 0) zipBadge = '<span class="badge badge-muted">Vazia</span>';
+		else if (zips.length === 0) zipBadge = '<span class="badge badge-muted">Sem ZIP</span>';
+		else if (zipSongCount < songCount) zipBadge = '<span class="badge badge-warning">ZIP desatualizado</span>';
+		else zipBadge = '<span class="badge badge-success">ZIP ' + zipSizeMB + ' MB</span>';
+
+		var hasCover = !!p.cover_r2_key;
+		var coverHtml = hasCover
+			? '<img src="/api/playlists/' + p.id + '/cover-preview" style="width:100%;height:100%;object-fit:cover;">'
+			: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>';
+
+		return '<div class="pl-card" style="margin-left:0;">' +
+			'<div class="pl-card-top">' +
+				'<div class="pl-cover">' + coverHtml + '</div>' +
+				'<div class="pl-info">' +
+					'<div class="pl-name">' + p.name + '</div>' +
+					'<div class="pl-stats">' +
+						'<span>' + songCount + ' m\u00fasica' + (songCount !== 1 ? 's' : '') + '</span>' +
+						'<span>&middot;</span><span>' + totalSizeMB + ' MB</span>' +
+						'<span>&middot;</span>' + zipBadge +
+					'</div>' +
+				'</div>' +
+				'<div class="pl-actions">' +
+					'<button class="btn btn-primary btn-sm" onclick="openDetail('+idx+')">Gerenciar</button>' +
+					'<button class="btn btn-danger btn-sm" onclick="deletePlaylist('+p.id+', \\''+p.name.replace(/'/g, "\\\\'")+'\\')">Excluir</button>' +
+				'</div>' +
+			'</div>' +
+		'</div>';
+	}
+
 	async function loadPlaylists() {
-		const res = await fetch('/api/playlists');
-		const data = await res.json();
-		playlistsCache = data;
+		var [plRes, flRes] = await Promise.all([
+			fetch('/api/playlists'),
+			fetch('/api/folders')
+		]);
+		playlistsCache = await plRes.json();
+		foldersCache = await flRes.json();
 
 		// Fetch ZIP status for all playlists in parallel
-		zipsCache = await Promise.all(data.map(function(p) {
+		zipsCache = await Promise.all(playlistsCache.map(function(p) {
 			return fetch('/api/playlists/' + p.id + '/zips').then(function(r) { return r.json(); }).catch(function() { return []; });
 		}));
 
-		document.getElementById('playlistCount').textContent = data.length + ' playlist' + (data.length !== 1 ? 's' : '');
+		var totalItems = playlistsCache.length + foldersCache.length;
+		document.getElementById('playlistCount').textContent = foldersCache.length + ' pasta' + (foldersCache.length !== 1 ? 's' : '') + ' \u00b7 ' + playlistsCache.length + ' playlist' + (playlistsCache.length !== 1 ? 's' : '');
 
-		const container = document.getElementById('playlistsList');
-		if (data.length === 0) {
-			container.innerHTML = '<div style="text-align:center;padding:48px;color:#aaa;font-size:14px;">Nenhuma playlist criada ainda.</div>';
-			return;
-		}
+		var container = document.getElementById('playlistsList');
+		var html = '';
 
-		container.innerHTML = data.map(function(p, idx) {
-			var zips = zipsCache[idx] || [];
-			var songCount = p.song_count || 0;
-			var totalSizeMB = ((p.total_size || 0) / (1024 * 1024)).toFixed(0);
-			var totalZipSize = zips.reduce(function(s, z) { return s + (z.file_size || 0); }, 0);
-			var zipSizeMB = (totalZipSize / (1024 * 1024)).toFixed(0);
-			var zipSongCount = zips.reduce(function(s, z) { return s + (z.song_count || 0); }, 0);
-
-			var zipBadge = '';
-			if (songCount === 0) {
-				zipBadge = '<span class="badge badge-muted">Vazia</span>';
-			} else if (zips.length === 0) {
-				zipBadge = '<span class="badge badge-muted">Sem ZIP</span>';
-			} else if (zipSongCount < songCount) {
-				zipBadge = '<span class="badge badge-warning">ZIP desatualizado</span>';
-			} else {
-				zipBadge = '<span class="badge badge-success">ZIP ' + zipSizeMB + ' MB</span>';
+		// Render folders with their playlists
+		for (var fi = 0; fi < foldersCache.length; fi++) {
+			var folder = foldersCache[fi];
+			var folderLink = location.origin + '/' + folder.slug + '?token=' + (folder.access_token || '');
+			var folderPlaylists = [];
+			for (var pi = 0; pi < playlistsCache.length; pi++) {
+				if (playlistsCache[pi].folder_id === folder.id) folderPlaylists.push(pi);
 			}
 
-			var hasCover = !!p.cover_r2_key;
-			var coverHtml = hasCover
-				? '<img src="/api/playlists/' + p.id + '/cover-preview" style="width:100%;height:100%;object-fit:cover;">'
-				: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>';
-
-			var fullLink = location.origin + '/' + p.slug + '?token=' + (p.access_token || '');
-
-			return '<div class="pl-card">' +
-				'<div class="pl-card-top">' +
-					'<div class="pl-cover">' + coverHtml + '</div>' +
-					'<div class="pl-info">' +
-						'<div class="pl-name">' + p.name + '</div>' +
-						'<div class="pl-stats">' +
-							'<span>' + songCount + ' m\u00fasica' + (songCount !== 1 ? 's' : '') + '</span>' +
-							'<span>&middot;</span>' +
-							'<span>' + totalSizeMB + ' MB</span>' +
-							'<span>&middot;</span>' +
-							zipBadge +
+			html += '<div style="margin-bottom:16px;">' +
+				'<div class="pl-card" style="background:#f8f8ff;border-color:#e0e0f0;">' +
+					'<div class="pl-card-top">' +
+						'<div style="font-size:24px;width:52px;text-align:center;">\ud83d\udcc1</div>' +
+						'<div class="pl-info">' +
+							'<div class="pl-name">' + folder.name + '</div>' +
+							'<div class="pl-stats">' +
+								'<span>' + folderPlaylists.length + ' playlist' + (folderPlaylists.length !== 1 ? 's' : '') + '</span>' +
+								(folder.description ? '<span>&middot;</span><span>' + folder.description + '</span>' : '') +
+							'</div>' +
+						'</div>' +
+						'<div class="pl-actions">' +
+							'<button class="btn btn-ghost btn-sm" onclick="copyLink(\\''+folderLink+'\\')">Link da Pasta</button>' +
+							'<button class="btn btn-danger btn-sm" onclick="deleteFolder('+folder.id+', \\''+folder.name.replace(/'/g, "\\\\'")+'\\')">Excluir</button>' +
 						'</div>' +
 					'</div>' +
-					'<div class="pl-actions">' +
-						'<button class="btn btn-ghost btn-sm" onclick="copyLink(\\''+fullLink+'\\')">Copiar</button>' +
-						'<button class="btn btn-primary btn-sm" onclick="openDetail('+idx+')">Gerenciar</button>' +
-						'<button class="btn btn-danger btn-sm" onclick="deletePlaylist('+p.id+', \\''+p.name.replace(/'/g, "\\\\'")+'\\')">Excluir</button>' +
-					'</div>' +
-				'</div>' +
-			'</div>';
-		}).join('');
+				'</div>';
+
+			// Playlists inside this folder (indented)
+			for (var fpi = 0; fpi < folderPlaylists.length; fpi++) {
+				var pIdx = folderPlaylists[fpi];
+				html += '<div style="margin-left:32px;">' + renderPlaylistCard(playlistsCache[pIdx], pIdx) + '</div>';
+			}
+
+			if (folderPlaylists.length === 0) {
+				html += '<div style="margin-left:32px;padding:12px 16px;color:#aaa;font-size:13px;font-style:italic;">Nenhuma playlist nesta pasta. Arraste playlists para c\u00e1 via "Gerenciar".</div>';
+			}
+
+			html += '</div>';
+		}
+
+		// Standalone playlists (not in any folder)
+		var standalone = [];
+		for (var pi = 0; pi < playlistsCache.length; pi++) {
+			if (!playlistsCache[pi].folder_id) standalone.push(pi);
+		}
+
+		if (standalone.length > 0) {
+			if (foldersCache.length > 0) {
+				html += '<div style="font-size:12px;font-weight:600;color:#aaa;padding:12px 0 8px;text-transform:uppercase;letter-spacing:0.5px;">Sem pasta</div>';
+			}
+			for (var si = 0; si < standalone.length; si++) {
+				html += renderPlaylistCard(playlistsCache[standalone[si]], standalone[si]);
+			}
+		}
+
+		if (playlistsCache.length === 0 && foldersCache.length === 0) {
+			html = '<div style="text-align:center;padding:48px;color:#aaa;font-size:14px;">Nenhuma pasta ou playlist criada ainda.</div>';
+		}
+
+		container.innerHTML = html;
 	}
 
 	// ===== Playlist CRUD =====
@@ -535,6 +620,64 @@ export function renderAdminPage(): string {
 			.replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 		document.getElementById('playlistSlug').value = slug;
 	});
+
+	// Auto-generate folder slug from folder name
+	document.getElementById('folderName').addEventListener('input', function(e) {
+		var slug = e.target.value.toLowerCase()
+			.normalize('NFD').replace(/[\\u0300-\\u036f]/g, '')
+			.replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+		document.getElementById('folderSlug').value = slug;
+	});
+
+	// ===== Folders =====
+	async function createFolder() {
+		var name = document.getElementById('folderName').value.trim();
+		var slug = document.getElementById('folderSlug').value.trim();
+		var desc = document.getElementById('folderDesc') ? document.getElementById('folderDesc').value.trim() : '';
+		if (!name || !slug) { showToast('Preencha nome e slug', 'error'); return; }
+		try {
+			var res = await fetch('/api/folders', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ name: name, slug: slug, description: desc })
+			});
+			var data = await res.json();
+			if (!res.ok) { showToast(data.error || 'Erro ao criar pasta', 'error'); return; }
+			showToast('Pasta criada!');
+			document.getElementById('folderName').value = '';
+			document.getElementById('folderSlug').value = '';
+			if (document.getElementById('folderDesc')) document.getElementById('folderDesc').value = '';
+			toggleCreateFolderForm();
+			loadPlaylists();
+		} catch (e) { showToast('Erro: ' + e.message, 'error'); }
+	}
+
+	async function deleteFolder(id, name) {
+		if (!confirm('Excluir pasta "' + name + '"? As playlists dentro dela ficar\u00e3o sem pasta.')) return;
+		try {
+			var res = await fetch('/api/folders/' + id, { method: 'DELETE' });
+			if (!res.ok) { var d = await res.json(); showToast(d.error || 'Erro ao excluir', 'error'); return; }
+			showToast('Pasta exclu\u00edda!');
+			loadPlaylists();
+		} catch (e) { showToast('Erro: ' + e.message, 'error'); }
+	}
+
+	async function movePlaylistToFolder() {
+		if (!currentPlaylist) return;
+		var sel = document.getElementById('detailFolder');
+		var folderId = sel.value ? parseInt(sel.value) : null;
+		try {
+			var res = await fetch('/api/playlists/' + currentPlaylist.id + '/folder', {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ folder_id: folderId })
+			});
+			if (!res.ok) { showToast('Erro ao mover playlist', 'error'); return; }
+			currentPlaylist.folder_id = folderId;
+			showToast(folderId ? 'Playlist movida para pasta!' : 'Playlist removida da pasta!');
+			loadPlaylists();
+		} catch (e) { showToast('Erro: ' + e.message, 'error'); }
+	}
 
 	// ===== Songs =====
 	async function loadDetailSongs() {
