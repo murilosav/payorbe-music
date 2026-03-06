@@ -99,7 +99,7 @@ export function renderAdminPage(): string {
 		border-radius: 12px;
 		padding: 32px;
 		text-align: center;
-		cursor: pointer;
+		cursor: default;
 		transition: all 0.2s;
 		color: #888;
 		margin-bottom: 16px;
@@ -122,18 +122,82 @@ export function renderAdminPage(): string {
 		transition: width 0.3s;
 	}
 
+	.upload-banner {
+		position: fixed;
+		top: 0;
+		left: 0;
+		right: 0;
+		background: #1a1a1a;
+		color: #fff;
+		z-index: 999;
+		padding: 0;
+		transition: transform 0.3s;
+		transform: translateY(-100%);
+	}
+	.upload-banner.active { transform: translateY(0); }
+	.upload-banner-content {
+		max-width: 800px;
+		margin: 0 auto;
+		padding: 14px 20px;
+		display: flex;
+		align-items: center;
+		gap: 16px;
+	}
+	.upload-banner .spinner {
+		width: 20px;
+		height: 20px;
+		border: 2px solid rgba(255,255,255,0.3);
+		border-top-color: #fff;
+		border-radius: 50%;
+		animation: spin 0.8s linear infinite;
+	}
+	@keyframes spin { to { transform: rotate(360deg); } }
+	.upload-banner-text { flex: 1; font-size: 14px; }
+	.upload-banner-pct { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+	.upload-banner-bar {
+		position: absolute;
+		bottom: 0;
+		left: 0;
+		height: 3px;
+		background: #4ade80;
+		transition: width 0.3s;
+	}
+	.upload-banner.done { background: #16a34a; }
+	.upload-banner.has-errors { background: #dc2626; }
+
 	.upload-queue { margin-top: 12px; }
 	.upload-item {
 		display: flex;
-		justify-content: space-between;
 		align-items: center;
-		padding: 8px 0;
+		gap: 10px;
+		padding: 8px 12px;
 		font-size: 13px;
 		border-bottom: 1px solid #f5f5f5;
+		border-radius: 6px;
+		transition: background 0.2s;
 	}
-	.upload-item .status { color: #888; }
-	.upload-item .status.done { color: #22c55e; }
-	.upload-item .status.error { color: #ef4444; }
+	.upload-item.uploading { background: #f8f8f8; }
+	.upload-item .status-icon {
+		width: 20px;
+		height: 20px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
+	}
+	.upload-item .status-icon.waiting { color: #ddd; }
+	.upload-item .status-icon.uploading { color: #1a1a1a; }
+	.upload-item .status-icon.done { color: #22c55e; }
+	.upload-item .status-icon.error { color: #ef4444; }
+	.upload-item .file-info { flex: 1; min-width: 0; }
+	.upload-item .file-name {
+		display: block;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	.upload-item .file-folder { font-size: 11px; color: #aaa; }
+	.upload-item .file-status { font-size: 12px; color: #888; flex-shrink: 0; }
 
 	.tabs {
 		display: flex;
@@ -167,6 +231,16 @@ export function renderAdminPage(): string {
 	</style>
 </head>
 <body>
+	<!-- Upload progress banner (fixed at top) -->
+	<div class="upload-banner" id="uploadBanner">
+		<div class="upload-banner-content">
+			<div class="spinner" id="bannerSpinner"></div>
+			<span class="upload-banner-text" id="bannerText">Enviando...</span>
+			<span class="upload-banner-pct" id="bannerPct">0%</span>
+		</div>
+		<div class="upload-banner-bar" id="bannerBar" style="width:0%"></div>
+	</div>
+
 	<div class="container">
 		<div style="display:flex;justify-content:space-between;align-items:center;">
 			<h1>Admin - PayOrbe Music</h1>
@@ -534,12 +608,51 @@ export function renderAdminPage(): string {
 		let completed = 0;
 		let errors = 0;
 
+		// Show banner
+		const banner = document.getElementById('uploadBanner');
+		banner.className = 'upload-banner active';
+		document.getElementById('bannerSpinner').style.display = 'block';
+
+		// Build all items in queue first
+		const items = [];
 		for (const pending of pendingFiles) {
 			const item = document.createElement('div');
 			item.className = 'upload-item';
-			const folderLabel = pending.folder ? '<span style="color:#aaa;font-size:11px;"> (' + pending.folder + ')</span>' : '';
-			item.innerHTML = '<span>' + pending.title + folderLabel + '</span><span class="status">Enviando...</span>';
+			const folderLabel = pending.folder ? '<span class="file-folder">' + pending.folder + '</span>' : '';
+			const sizeMB = (pending.file.size / (1024 * 1024)).toFixed(1);
+			item.innerHTML =
+				'<div class="status-icon waiting"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle></svg></div>' +
+				'<div class="file-info"><span class="file-name">' + pending.title + '</span>' + folderLabel + '</div>' +
+				'<span class="file-status">' + sizeMB + ' MB</span>';
 			queue.appendChild(item);
+			items.push(item);
+		}
+
+		function updateProgress() {
+			const pct = Math.round((completed / total) * 100);
+			document.getElementById('uploadProgressFill').style.width = pct + '%';
+			document.getElementById('progressCount').textContent = completed + '/' + total;
+			document.getElementById('bannerPct').textContent = pct + '%';
+			document.getElementById('bannerBar').style.width = pct + '%';
+			document.getElementById('bannerText').textContent =
+				'Enviando ' + (completed + 1) + ' de ' + total + '...';
+			document.getElementById('progressText').textContent =
+				'Enviando ' + (completed + 1) + ' de ' + total + '...';
+		}
+		updateProgress();
+
+		for (let i = 0; i < pendingFiles.length; i++) {
+			const pending = pendingFiles[i];
+			const item = items[i];
+
+			// Mark as uploading
+			item.className = 'upload-item uploading';
+			item.querySelector('.status-icon').className = 'status-icon uploading';
+			item.querySelector('.status-icon').innerHTML = '<div class="spinner" style="width:16px;height:16px;border-width:2px;border-color:rgba(0,0,0,0.15);border-top-color:#1a1a1a;"></div>';
+			item.querySelector('.file-status').textContent = 'Enviando...';
+
+			// Scroll to current item
+			item.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
 			try {
 				const formData = new FormData();
@@ -551,26 +664,45 @@ export function renderAdminPage(): string {
 
 				const res = await fetch('/api/songs/upload', { method: 'POST', body: formData });
 				if (res.ok) {
-					item.querySelector('.status').className = 'status done';
-					item.querySelector('.status').textContent = 'Enviado!';
+					item.className = 'upload-item';
+					item.querySelector('.status-icon').className = 'status-icon done';
+					item.querySelector('.status-icon').innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"></path></svg>';
+					item.querySelector('.file-status').textContent = 'Enviado';
+					item.querySelector('.file-status').style.color = '#22c55e';
 				} else {
 					const err = await res.json();
 					throw new Error(err.error);
 				}
 			} catch (err) {
-				item.querySelector('.status').className = 'status error';
-				item.querySelector('.status').textContent = 'Erro: ' + err.message;
+				item.className = 'upload-item';
+				item.querySelector('.status-icon').className = 'status-icon error';
+				item.querySelector('.status-icon').innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>';
+				item.querySelector('.file-status').textContent = err.message;
+				item.querySelector('.file-status').style.color = '#ef4444';
 				errors++;
 			}
 
 			completed++;
-			const pct = (completed / total) * 100;
-			document.getElementById('uploadProgressFill').style.width = pct + '%';
-			document.getElementById('progressCount').textContent = completed + '/' + total;
-			document.getElementById('progressText').textContent =
-				completed === total
-					? (errors > 0 ? 'Concluido com ' + errors + ' erro(s)' : 'Upload concluido!')
-					: 'Enviando...';
+			updateProgress();
+		}
+
+		// Final state
+		document.getElementById('bannerSpinner').style.display = 'none';
+		if (errors > 0) {
+			banner.className = 'upload-banner active has-errors';
+			document.getElementById('bannerText').textContent = 'Concluido com ' + errors + ' erro(s) de ' + total;
+			document.getElementById('progressText').textContent = 'Concluido com ' + errors + ' erro(s)';
+		} else {
+			banner.className = 'upload-banner active done';
+			document.getElementById('bannerText').textContent = total + ' musica' + (total !== 1 ? 's' : '') + ' enviada' + (total !== 1 ? 's' : '') + ' com sucesso!';
+			document.getElementById('progressText').textContent = 'Upload concluido!';
+		}
+		document.getElementById('bannerPct').textContent = '100%';
+		document.getElementById('bannerBar').style.width = '100%';
+
+		// Auto-hide banner after 5s on success
+		if (errors === 0) {
+			setTimeout(() => { banner.className = 'upload-banner'; }, 5000);
 		}
 
 		pendingFiles = [];
