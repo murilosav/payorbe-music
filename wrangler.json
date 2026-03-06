@@ -1,0 +1,16 @@
+{
+	"compatibility_date": "2025-10-08",
+	"main": "src/index.ts",
+	"name": "payorbe-music",
+	"upload_source_maps": true,
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_id": "40d3d5b2-58e9-4993-b385-8dabde80dda2",
+			"database_name": "d1-music-database"
+		}
+	],
+	"observability": {
+		"enabled": true
+	}
+}
