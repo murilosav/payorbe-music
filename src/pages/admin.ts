@@ -170,7 +170,10 @@ export function renderAdminPage(): string {
 	<div class="container">
 		<div style="display:flex;justify-content:space-between;align-items:center;">
 			<h1>Admin - PayOrbe Music</h1>
-			<a href="/" style="color:#888;font-size:13px;text-decoration:none;">Voltar ao site</a>
+			<div style="display:flex;gap:16px;align-items:center;">
+				<a href="/" style="color:#888;font-size:13px;text-decoration:none;">Voltar ao site</a>
+				<a href="/admin/logout" style="color:#dc2626;font-size:13px;text-decoration:none;">Sair</a>
+			</div>
 		</div>
 
 		<div class="tabs">
@@ -212,16 +215,50 @@ export function renderAdminPage(): string {
 					<label>Playlist</label>
 					<select id="uploadPlaylist"></select>
 				</div>
-				<div class="form-group">
-					<label>Pasta (opcional)</label>
-					<input type="text" id="uploadFolder" placeholder="Ex: CD 01 - Adoracao">
+
+				<div style="display:flex;gap:12px;margin-bottom:16px;">
+					<button class="btn btn-primary" onclick="document.getElementById('folderInput').click()" style="flex:1;">
+						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+						Selecionar Pasta
+					</button>
+					<button class="btn btn-secondary" onclick="document.getElementById('fileInput').click()" style="flex:1;">
+						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path><polyline points="13 2 13 9 20 9"></polyline></svg>
+						Selecionar Arquivos
+					</button>
 				</div>
-				<div class="upload-area" id="uploadArea" onclick="document.getElementById('fileInput').click()">
+
+				<div class="upload-area" id="uploadArea">
 					<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="margin-bottom:8px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
-					<p>Clique ou arraste arquivos de musica aqui</p>
-					<p style="font-size:12px;margin-top:4px;">MP3, MP4, WAV, FLAC, OGG</p>
+					<p>Ou arraste uma pasta / arquivos aqui</p>
+					<p style="font-size:12px;margin-top:4px;">MP3, MP4, M4A, WAV, FLAC, OGG</p>
 				</div>
-				<input type="file" id="fileInput" multiple accept="audio/*,.mp3,.mp4,.m4a,.wav,.flac,.ogg" style="display:none" onchange="handleFiles(this.files)">
+
+				<!-- Folder input (webkitdirectory) -->
+				<input type="file" id="folderInput" webkitdirectory multiple style="display:none" onchange="handleFolderSelect(this.files)">
+				<!-- File input (normal) -->
+				<input type="file" id="fileInput" multiple accept="audio/*,.mp3,.mp4,.m4a,.wav,.flac,.ogg" style="display:none" onchange="handleFiles(this.files, '')">
+
+				<div id="uploadSummary" style="display:none;margin-bottom:16px;" class="card">
+					<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+						<div>
+							<strong id="summaryTitle">Pasta selecionada</strong>
+							<p style="font-size:13px;color:#888;" id="summaryInfo"></p>
+						</div>
+						<button class="btn btn-primary" onclick="startUpload()">Enviar Tudo</button>
+					</div>
+					<div id="folderPreview" style="max-height:300px;overflow-y:auto;"></div>
+				</div>
+
+				<div id="uploadProgress" style="display:none;margin-bottom:16px;">
+					<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+						<span style="font-size:14px;font-weight:500;" id="progressText">Enviando...</span>
+						<span style="font-size:13px;color:#888;" id="progressCount">0/0</span>
+					</div>
+					<div class="progress-bar" style="height:6px;">
+						<div class="progress-fill" id="uploadProgressFill"></div>
+					</div>
+				</div>
+
 				<div class="upload-queue" id="uploadQueue"></div>
 			</div>
 		</div>
@@ -330,40 +367,187 @@ export function renderAdminPage(): string {
 			data.map(p => '<option value="' + p.slug + '">' + p.name + '</option>').join('');
 	}
 
-	// Drag and drop
+	// Audio file extensions
+	const AUDIO_EXT = ['.mp3','.mp4','.m4a','.wav','.flac','.ogg','.aac','.wma','.opus'];
+	function isAudioFile(name) {
+		return AUDIO_EXT.some(ext => name.toLowerCase().endsWith(ext));
+	}
+
+	// Pending files to upload: { file, folder, title }
+	let pendingFiles = [];
+
+	// Drag and drop (supports folders)
 	const uploadArea = document.getElementById('uploadArea');
 	uploadArea.addEventListener('dragover', (e) => { e.preventDefault(); uploadArea.classList.add('dragover'); });
 	uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('dragover'));
-	uploadArea.addEventListener('drop', (e) => {
+	uploadArea.addEventListener('drop', async (e) => {
 		e.preventDefault();
 		uploadArea.classList.remove('dragover');
-		handleFiles(e.dataTransfer.files);
+
+		const items = e.dataTransfer.items;
+		if (items && items.length > 0) {
+			const entries = [];
+			for (const item of items) {
+				const entry = item.webkitGetAsEntry && item.webkitGetAsEntry();
+				if (entry) entries.push(entry);
+			}
+			if (entries.length > 0 && entries.some(e => e.isDirectory)) {
+				const files = [];
+				for (const entry of entries) {
+					await readEntryRecursive(entry, '', files);
+				}
+				preparePending(files);
+				return;
+			}
+		}
+		// Fallback: normal files
+		handleFiles(e.dataTransfer.files, '');
 	});
 
-	async function handleFiles(files) {
-		const queue = document.getElementById('uploadQueue');
+	// Read directory entries recursively
+	function readEntryRecursive(entry, basePath, result) {
+		return new Promise((resolve) => {
+			if (entry.isFile) {
+				entry.file((file) => {
+					if (isAudioFile(file.name)) {
+						result.push({ file, folder: basePath });
+					}
+					resolve();
+				});
+			} else if (entry.isDirectory) {
+				const reader = entry.createReader();
+				const folderName = basePath ? basePath + ' / ' + entry.name : entry.name;
+				reader.readEntries(async (entries) => {
+					for (const child of entries) {
+						await readEntryRecursive(child, folderName, result);
+					}
+					resolve();
+				});
+			} else {
+				resolve();
+			}
+		});
+	}
+
+	// Handle folder selection via input[webkitdirectory]
+	function handleFolderSelect(fileList) {
+		if (!document.getElementById('uploadPlaylist').value) {
+			alert('Selecione uma playlist primeiro.');
+			return;
+		}
+
+		const files = [];
+		for (const file of fileList) {
+			if (!isAudioFile(file.name)) continue;
+			// webkitRelativePath = "FolderName/SubFolder/file.mp3"
+			const parts = file.webkitRelativePath.split('/');
+			// Remove root folder name and file name, keep middle folders
+			let folder = '';
+			if (parts.length > 2) {
+				folder = parts.slice(1, -1).join(' / ');
+			} else if (parts.length === 2) {
+				folder = parts[0];
+			}
+			files.push({ file, folder });
+		}
+		preparePending(files);
+	}
+
+	// Handle individual file selection
+	function handleFiles(fileList, folder) {
+		if (!document.getElementById('uploadPlaylist').value) {
+			alert('Selecione uma playlist primeiro.');
+			return;
+		}
+
+		const files = [];
+		for (const file of fileList) {
+			if (!isAudioFile(file.name)) continue;
+			files.push({ file, folder: folder || '' });
+		}
+		if (files.length === 0) {
+			alert('Nenhum arquivo de audio encontrado.');
+			return;
+		}
+		preparePending(files);
+	}
+
+	// Show preview before uploading
+	function preparePending(files) {
+		pendingFiles = files.map(f => ({
+			...f,
+			title: f.file.name.replace(/\\.[^.]+$/, '').replace(/^\\d+[\\s._-]+/, '')
+		}));
+
+		// Group by folder for preview
+		const grouped = {};
+		for (const f of pendingFiles) {
+			const key = f.folder || '(raiz)';
+			if (!grouped[key]) grouped[key] = [];
+			grouped[key].push(f);
+		}
+
+		const totalSize = pendingFiles.reduce((sum, f) => sum + f.file.size, 0);
+		const sizeMB = (totalSize / (1024 * 1024)).toFixed(1);
+
+		document.getElementById('summaryTitle').textContent = Object.keys(grouped).length > 1
+			? Object.keys(grouped).length + ' pastas encontradas'
+			: 'Pasta selecionada';
+		document.getElementById('summaryInfo').textContent =
+			pendingFiles.length + ' musica' + (pendingFiles.length !== 1 ? 's' : '') + ' - ' + sizeMB + ' MB total';
+
+		let previewHtml = '';
+		for (const [folder, items] of Object.entries(grouped)) {
+			previewHtml += '<div style="margin-bottom:12px;">';
+			previewHtml += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;font-size:13px;font-weight:600;color:#555;">';
+			previewHtml += '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>';
+			previewHtml += folder + ' <span style="font-weight:400;color:#aaa;">(' + items.length + ')</span></div>';
+			for (const item of items) {
+				const sizeMB = (item.file.size / (1024 * 1024)).toFixed(1);
+				previewHtml += '<div style="display:flex;justify-content:space-between;padding:4px 0 4px 20px;font-size:13px;color:#666;border-bottom:1px solid #f5f5f5;">';
+				previewHtml += '<span>' + item.title + '</span>';
+				previewHtml += '<span style="color:#aaa;">' + sizeMB + ' MB</span>';
+				previewHtml += '</div>';
+			}
+			previewHtml += '</div>';
+		}
+
+		document.getElementById('folderPreview').innerHTML = previewHtml;
+		document.getElementById('uploadSummary').style.display = 'block';
+		document.getElementById('uploadQueue').innerHTML = '';
+		document.getElementById('uploadProgress').style.display = 'none';
+	}
+
+	// Start uploading all pending files
+	async function startUpload() {
 		const playlistId = document.getElementById('uploadPlaylist').value;
-		const folder = document.getElementById('uploadFolder').value.trim();
-
 		if (!playlistId) { alert('Selecione uma playlist primeiro.'); return; }
+		if (pendingFiles.length === 0) return;
 
-		for (const file of files) {
+		document.getElementById('uploadSummary').style.display = 'none';
+		document.getElementById('uploadProgress').style.display = 'block';
+
+		const queue = document.getElementById('uploadQueue');
+		queue.innerHTML = '';
+
+		const total = pendingFiles.length;
+		let completed = 0;
+		let errors = 0;
+
+		for (const pending of pendingFiles) {
 			const item = document.createElement('div');
 			item.className = 'upload-item';
-			const title = file.name.replace(/\\.[^.]+$/, '').replace(/^\\d+[\\s._-]+/, '');
-			item.innerHTML = \`
-				<span>\${file.name}</span>
-				<span class="status">Enviando...</span>
-			\`;
+			const folderLabel = pending.folder ? '<span style="color:#aaa;font-size:11px;"> (' + pending.folder + ')</span>' : '';
+			item.innerHTML = '<span>' + pending.title + folderLabel + '</span><span class="status">Enviando...</span>';
 			queue.appendChild(item);
 
 			try {
 				const formData = new FormData();
-				formData.append('file', file);
+				formData.append('file', pending.file);
 				formData.append('playlist_id', playlistId);
-				formData.append('title', title);
+				formData.append('title', pending.title);
 				formData.append('artist', 'Desconhecido');
-				formData.append('folder', folder);
+				formData.append('folder', pending.folder);
 
 				const res = await fetch('/api/songs/upload', { method: 'POST', body: formData });
 				if (res.ok) {
@@ -376,8 +560,20 @@ export function renderAdminPage(): string {
 			} catch (err) {
 				item.querySelector('.status').className = 'status error';
 				item.querySelector('.status').textContent = 'Erro: ' + err.message;
+				errors++;
 			}
+
+			completed++;
+			const pct = (completed / total) * 100;
+			document.getElementById('uploadProgressFill').style.width = pct + '%';
+			document.getElementById('progressCount').textContent = completed + '/' + total;
+			document.getElementById('progressText').textContent =
+				completed === total
+					? (errors > 0 ? 'Concluido com ' + errors + ' erro(s)' : 'Upload concluido!')
+					: 'Enviando...';
 		}
+
+		pendingFiles = [];
 	}
 
 	// Songs management

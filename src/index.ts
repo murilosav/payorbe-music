@@ -2,6 +2,7 @@ import { handleApi } from "./api";
 import { renderPlaylistPage } from "./pages/playlist";
 import { renderHomePage } from "./pages/home";
 import { renderAdminPage } from "./pages/admin";
+import { verifyAuth, handleLogin, handleLogout } from "./auth";
 
 export interface Env {
 	DB: D1Database;
@@ -26,10 +27,24 @@ export default {
 		}
 
 		try {
-			// API routes
+			// Auth routes (public)
+			if (path === "/admin/login") {
+				return handleLogin(request, env);
+			}
+			if (path === "/admin/logout") {
+				return handleLogout(request, env);
+			}
+
+			// Protected: API routes
 			if (path.startsWith("/api/")) {
+				const isAuthed = await verifyAuth(request, env);
+				if (!isAuthed) {
+					return new Response(JSON.stringify({ error: "Unauthorized" }), {
+						status: 401,
+						headers: { "content-type": "application/json" },
+					});
+				}
 				const response = await handleApi(request, env, path);
-				// Add CORS headers to API responses
 				const newHeaders = new Headers(response.headers);
 				Object.entries(corsHeaders).forEach(([k, v]) => newHeaders.set(k, v));
 				return new Response(response.body, { status: response.status, headers: newHeaders });
@@ -115,8 +130,15 @@ export default {
 				});
 			}
 
-			// Admin page
+			// Protected: Admin page
 			if (path === "/admin") {
+				const isAuthed = await verifyAuth(request, env);
+				if (!isAuthed) {
+					return new Response(null, {
+						status: 302,
+						headers: { "Location": "/admin/login" },
+					});
+				}
 				return new Response(renderAdminPage(), {
 					headers: { "content-type": "text/html; charset=utf-8" },
 				});
