@@ -108,6 +108,13 @@ export function renderAdminPage(): string {
 	.upload-item .file-name { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 	.upload-item .file-folder { font-size:11px; color:#aaa; }
 	.upload-item .file-status { font-size:12px; color:#888; flex-shrink:0; }
+	/* Pagination */
+	.pagination { display:flex; align-items:center; justify-content:center; gap:8px; padding:16px 0 4px; font-size:13px; }
+	.pagination button { padding:6px 14px; border:1px solid #ddd; background:#fff; border-radius:6px; font-size:12px; cursor:pointer; font-family:inherit; transition:all 0.15s; }
+	.pagination button:hover:not(:disabled) { border-color:#999; }
+	.pagination button:disabled { opacity:0.4; cursor:not-allowed; }
+	.pagination span { color:#888; }
+
 	.progress-bar { width:100%; height:4px; background:#eee; border-radius:2px; overflow:hidden; }
 	.progress-fill { height:100%; background:#1a1a1a; width:0%; transition:width 0.3s; }
 	</style>
@@ -230,7 +237,15 @@ export function renderAdminPage(): string {
 					</button>
 				</div>
 				<input type="file" id="folderInput" webkitdirectory multiple style="display:none" onchange="handleFolderSelect(this.files)">
-				<input type="file" id="fileInput" multiple accept="audio/*,.mp3,.mp4,.m4a,.wav,.flac,.ogg" style="display:none" onchange="handleFiles(this.files, '')">
+				<input type="file" id="fileInput" multiple accept="audio/*,.mp3,.mp4,.m4a,.wav,.flac,.ogg" style="display:none" onchange="handleFilesFromInput(this.files)">
+				<div id="folderSelectBox" style="display:none;margin-bottom:12px;">
+					<div class="form-group" style="margin:0;">
+						<label>Pasta destino</label>
+						<select id="targetFolder">
+							<option value="">Selecione uma pasta</option>
+						</select>
+					</div>
+				</div>
 				<div class="upload-area" id="uploadArea">
 					<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="margin-bottom:6px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
 					<p style="font-size:13px;">Arraste pasta ou arquivos aqui</p>
@@ -275,6 +290,10 @@ export function renderAdminPage(): string {
 	let zipsCache = [];
 	let currentPlaylist = null;
 	let currentZips = [];
+	let currentSongs = [];
+	let currentFolders = [];
+	let songsPage = 1;
+	var SONGS_PER_PAGE = 50;
 	let pendingFiles = [];
 
 	// ===== Toast =====
@@ -521,8 +540,36 @@ export function renderAdminPage(): string {
 	async function loadDetailSongs() {
 		if (!currentPlaylist) return;
 		var res = await fetch('/api/playlists/' + currentPlaylist.slug + '/songs');
-		var songs = await res.json();
+		currentSongs = await res.json();
 
+		// Extract unique folders
+		var folderSet = {};
+		for (var i = 0; i < currentSongs.length; i++) {
+			if (currentSongs[i].folder) folderSet[currentSongs[i].folder] = true;
+		}
+		currentFolders = Object.keys(folderSet).sort();
+
+		// Update folder dropdown for file uploads
+		updateFolderDropdown();
+
+		songsPage = 1;
+		renderSongsPage();
+	}
+
+	function updateFolderDropdown() {
+		var box = document.getElementById('folderSelectBox');
+		var sel = document.getElementById('targetFolder');
+		if (currentFolders.length > 0) {
+			box.style.display = 'block';
+			sel.innerHTML = '<option value="">Selecione uma pasta</option>' +
+				currentFolders.map(function(f) { return '<option value="' + f + '">' + f + '</option>'; }).join('');
+		} else {
+			box.style.display = 'none';
+		}
+	}
+
+	function renderSongsPage() {
+		var songs = currentSongs;
 		document.getElementById('songsTitle').textContent = 'M\u00fasicas (' + songs.length + ')';
 
 		if (songs.length === 0) {
@@ -531,17 +578,23 @@ export function renderAdminPage(): string {
 			return;
 		}
 
+		var totalPages = Math.ceil(songs.length / SONGS_PER_PAGE);
+		if (songsPage > totalPages) songsPage = totalPages;
+		var start = (songsPage - 1) * SONGS_PER_PAGE;
+		var end = Math.min(start + SONGS_PER_PAGE, songs.length);
+		var pageSongs = songs.slice(start, end);
+
 		var html = '<div class="select-all-row">' +
 			'<input type="checkbox" id="selectAll" onchange="toggleSelectAll()">' +
-			'<label for="selectAll" style="cursor:pointer;">Selecionar todas</label>' +
+			'<label for="selectAll" style="cursor:pointer;">Selecionar todas da p\u00e1gina</label>' +
 			'</div>';
 
-		// Group by folder
+		// Group page songs by folder
 		var grouped = {};
-		for (var i = 0; i < songs.length; i++) {
-			var f = songs[i].folder || '';
+		for (var i = 0; i < pageSongs.length; i++) {
+			var f = pageSongs[i].folder || '';
 			if (!grouped[f]) grouped[f] = [];
-			grouped[f].push(songs[i]);
+			grouped[f].push(pageSongs[i]);
 		}
 
 		var folders = Object.keys(grouped).sort();
@@ -568,8 +621,24 @@ export function renderAdminPage(): string {
 			}
 		}
 
+		// Pagination controls
+		if (totalPages > 1) {
+			html += '<div class="pagination">' +
+				'<button onclick="goSongsPage(' + (songsPage - 1) + ')"' + (songsPage <= 1 ? ' disabled' : '') + '>Anterior</button>' +
+				'<span>P\u00e1gina ' + songsPage + ' de ' + totalPages + ' (' + songs.length + ' m\u00fasicas)</span>' +
+				'<button onclick="goSongsPage(' + (songsPage + 1) + ')"' + (songsPage >= totalPages ? ' disabled' : '') + '>Pr\u00f3xima</button>' +
+			'</div>';
+		}
+
 		document.getElementById('songsList').innerHTML = html;
 		document.getElementById('bulkDeleteBtn').style.display = 'none';
+	}
+
+	function goSongsPage(page) {
+		songsPage = page;
+		renderSongsPage();
+		// Scroll to songs section
+		document.getElementById('songsTitle').scrollIntoView({ behavior: 'smooth', block: 'start' });
 	}
 
 	function toggleSelectAll() {
@@ -849,6 +918,20 @@ export function renderAdminPage(): string {
 		preparePending(files);
 	}
 
+	function handleFilesFromInput(fileList) {
+		if (!currentPlaylist) { toast('Abra uma playlist primeiro.', 'error'); return; }
+		// If playlist has folders, require folder selection
+		var folder = '';
+		if (currentFolders.length > 0) {
+			folder = document.getElementById('targetFolder').value;
+			if (!folder) {
+				toast('Selecione uma pasta destino primeiro.', 'error');
+				return;
+			}
+		}
+		handleFiles(fileList, folder);
+	}
+
 	function handleFiles(fileList, folder) {
 		if (!currentPlaylist) { toast('Abra uma playlist primeiro.', 'error'); return; }
 		var files = [];
@@ -857,6 +940,16 @@ export function renderAdminPage(): string {
 			files.push({ file: fileList[i], folder: folder || '' });
 		}
 		if (files.length === 0) { toast('Nenhum arquivo de \u00e1udio encontrado.', 'error'); return; }
+
+		// Enforce folder rule: if playlist has folders, no loose songs
+		if (currentFolders.length > 0) {
+			var loose = files.filter(function(f) { return !f.folder; });
+			if (loose.length > 0) {
+				toast('Esta playlist usa pastas. Todas as m\u00fasicas devem estar dentro de uma pasta.', 'error');
+				return;
+			}
+		}
+
 		preparePending(files);
 	}
 
@@ -972,6 +1065,30 @@ export function renderAdminPage(): string {
 	}
 
 	async function preparePending(files) {
+		// Filter out duplicates against existing songs
+		if (currentSongs.length > 0) {
+			var existingKeys = {};
+			for (var i = 0; i < currentSongs.length; i++) {
+				var s = currentSongs[i];
+				// Key by filename (last part of r2_key) + folder
+				var fname = (s.r2_key || '').split('/').pop();
+				existingKeys[s.folder + '/' + fname] = true;
+			}
+			var original = files.length;
+			files = files.filter(function(f) {
+				var key = (f.folder || '') + '/' + f.file.name;
+				return !existingKeys[key];
+			});
+			var skipped = original - files.length;
+			if (skipped > 0) {
+				toast(skipped + ' m\u00fasica' + (skipped !== 1 ? 's' : '') + ' duplicada' + (skipped !== 1 ? 's' : '') + ' ignorada' + (skipped !== 1 ? 's' : '') + '.', 'info');
+			}
+			if (files.length === 0) {
+				toast('Todas as m\u00fasicas j\u00e1 existem nesta playlist.', 'info');
+				return;
+			}
+		}
+
 		document.getElementById('uploadSummary').style.display = 'block';
 		document.getElementById('summaryTitle').textContent = 'Lendo metadados...';
 		document.getElementById('summaryInfo').textContent = '0/' + files.length + ' processados';
@@ -1144,6 +1261,14 @@ export function renderAdminPage(): string {
 						item.querySelector('.status-icon').innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"></path></svg>';
 						item.querySelector('.file-status').textContent = 'Enviado';
 						item.querySelector('.file-status').style.color = '#22c55e';
+						success = true;
+					} else if (res.status === 409) {
+						// Duplicate - skip without error
+						item.className = 'upload-item';
+						item.querySelector('.status-icon').className = 'status-icon done';
+						item.querySelector('.status-icon').innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"></path></svg>';
+						item.querySelector('.file-status').textContent = 'J\u00e1 existe';
+						item.querySelector('.file-status').style.color = '#d97706';
 						success = true;
 					} else {
 						var err = await res.json();

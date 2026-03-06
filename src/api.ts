@@ -307,6 +307,14 @@ export async function handleApi(request: Request, env: Env, path: string): Promi
 		const folderPath = folder ? `${folder}/` : "";
 		const r2Key = `playlists/${playlist.slug}/${folderPath}${file.name}`;
 
+		// Check for duplicate
+		const existing = await env.DB.prepare(
+			"SELECT id FROM songs WHERE playlist_id = ? AND r2_key = ?"
+		).bind(parseInt(playlistId), r2Key).first();
+		if (existing) {
+			return json({ error: "duplicate", message: "M\u00fasica j\u00e1 existe nesta playlist" }, 409);
+		}
+
 		// Upload song to R2
 		const uploadPromises: Promise<any>[] = [
 			env.MUSIC_BUCKET.put(r2Key, file.stream(), {
