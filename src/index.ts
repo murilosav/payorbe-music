@@ -169,13 +169,9 @@ export default {
 				});
 			}
 
-			// Home page (admin only)
+			// Home page (public)
 			if (path === "/") {
-				if (!(await verifyAuth(request, env))) {
-					return new Response(null, { status: 302, headers: { "Location": "/admin/login" } });
-				}
-				const playlists = await env.DB.prepare("SELECT * FROM playlists ORDER BY created_at DESC").all();
-				return new Response(renderHomePage(playlists.results), {
+				return new Response(renderHomePage(), {
 					headers: { "content-type": "text/html; charset=utf-8" },
 				});
 			}
