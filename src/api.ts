@@ -8,9 +8,14 @@ export async function handleApi(request: Request, env: Env, path: string): Promi
 		});
 
 	// --- Playlists ---
-	// GET /api/playlists
+	// GET /api/playlists (with stats)
 	if (path === "/api/playlists" && request.method === "GET") {
-		const { results } = await env.DB.prepare("SELECT * FROM playlists ORDER BY created_at DESC").all();
+		const { results } = await env.DB.prepare(
+			`SELECT p.*,
+				(SELECT COUNT(*) FROM songs WHERE playlist_id = p.id) as song_count,
+				(SELECT COALESCE(SUM(file_size), 0) FROM songs WHERE playlist_id = p.id) as total_size
+			FROM playlists p ORDER BY p.created_at DESC`
+		).all();
 		return json(results);
 	}
 
@@ -64,6 +69,26 @@ export async function handleApi(request: Request, env: Env, path: string): Promi
 			env.DB.prepare("DELETE FROM playlists WHERE id = ?").bind(id).run(),
 		]);
 		return json({ success: true });
+	}
+
+	// PUT /api/playlists/:id - Update playlist
+	if (playlistDeleteMatch && request.method === "PUT") {
+		const id = parseInt(playlistDeleteMatch[1]);
+		const body = await request.json<{ name?: string; description?: string }>();
+
+		const fields: string[] = [];
+		const values: any[] = [];
+
+		if (body.name !== undefined) { fields.push("name = ?"); values.push(body.name); }
+		if (body.description !== undefined) { fields.push("description = ?"); values.push(body.description); }
+
+		if (fields.length === 0) return json({ error: "No fields to update" }, 400);
+
+		values.push(id);
+		await env.DB.prepare(`UPDATE playlists SET ${fields.join(", ")} WHERE id = ?`).bind(...values).run();
+
+		const playlist = await env.DB.prepare("SELECT * FROM playlists WHERE id = ?").bind(id).first();
+		return json(playlist);
 	}
 
 	// GET /api/playlists/:id/cover-preview - Get playlist cover (admin only)
@@ -331,6 +356,31 @@ export async function handleApi(request: Request, env: Env, path: string): Promi
 
 		await env.DB.prepare("UPDATE songs SET cover_r2_key = ? WHERE id = ?").bind(coverKey, songId).run();
 		return json({ success: true, cover_r2_key: coverKey });
+	}
+
+	// POST /api/songs/bulk-delete - Delete multiple songs at once
+	if (path === "/api/songs/bulk-delete" && request.method === "POST") {
+		const body = await request.json<{ ids: number[] }>();
+		if (!body.ids || body.ids.length === 0) return json({ error: "ids required" }, 400);
+
+		const placeholders = body.ids.map(() => "?").join(",");
+		const { results } = await env.DB.prepare(
+			`SELECT r2_key, cover_r2_key FROM songs WHERE id IN (${placeholders})`
+		).bind(...body.ids).all();
+
+		const deletes: Promise<void>[] = [];
+		for (const song of results) {
+			const s = song as { r2_key: string; cover_r2_key: string };
+			if (s.r2_key) deletes.push(env.MUSIC_BUCKET.delete(s.r2_key));
+			if (s.cover_r2_key) deletes.push(env.MUSIC_BUCKET.delete(s.cover_r2_key));
+		}
+		await Promise.all(deletes);
+
+		await env.DB.prepare(
+			`DELETE FROM songs WHERE id IN (${placeholders})`
+		).bind(...body.ids).run();
+
+		return json({ success: true, deleted: results.length });
 	}
 
 	// DELETE /api/songs/:id
