@@ -12,12 +12,22 @@ export interface Env {
 	ADMIN_KEY?: string;
 }
 
+// Resolve token: if it's a session token, return the real access_token. Otherwise return as-is.
+async function resolveToken(env: Env, token: string): Promise<string> {
+	if (!token) return "";
+	const session = await env.DB.prepare(
+		"SELECT access_token FROM session_tokens WHERE token = ? AND expires_at > datetime('now')"
+	).bind(token).first<{ access_token: string }>();
+	return session ? session.access_token : token;
+}
+
 async function verifySongAccess(env: Env, songId: number, token: string): Promise<{ r2_key: string; title: string; artist: string; cover_r2_key: string } | null> {
+	const realToken = await resolveToken(env, token);
 	return env.DB.prepare(
 		`SELECT s.r2_key, s.title, s.artist, s.cover_r2_key
 		 FROM songs s JOIN playlists p ON s.playlist_id = p.id
 		 WHERE s.id = ? AND p.access_token = ?`
-	).bind(songId, token).first();
+	).bind(songId, realToken).first();
 }
 
 export default {
@@ -40,6 +50,11 @@ export default {
 		}
 
 		try {
+			// Cleanup expired session tokens (~2% of requests)
+			if (Math.random() < 0.02) {
+				env.DB.prepare("DELETE FROM session_tokens WHERE expires_at < datetime('now')").run();
+			}
+
 			// Auth routes
 			if (path === "/admin/login") return handleLogin(request, env);
 			if (path === "/admin/logout") return handleLogout(request, env);
@@ -62,9 +77,10 @@ export default {
 				const playlistId = parseInt(path.split("/")[2]);
 				if (isNaN(playlistId) || !token) return new Response(null, { status: 403 });
 
+				const realToken = await resolveToken(env, token);
 				const playlist = await env.DB.prepare(
 					"SELECT cover_r2_key FROM playlists WHERE id = ? AND access_token = ?"
-				).bind(playlistId, token).first<{ cover_r2_key: string }>();
+				).bind(playlistId, realToken).first<{ cover_r2_key: string }>();
 				if (!playlist || !playlist.cover_r2_key) return new Response(null, { status: 404 });
 
 				const object = await env.MUSIC_BUCKET.get(playlist.cover_r2_key);
@@ -129,17 +145,19 @@ export default {
 				const folder = decodeURIComponent(parts.slice(1).join("/") || "");
 				const zipPart = parseInt(url.searchParams.get("part") || "1");
 
+				const realToken = await resolveToken(env, token);
+
 				// Check playlist token directly, or via folder token
 				let playlist = await env.DB.prepare(
 					"SELECT id, name FROM playlists WHERE slug = ? AND access_token = ?"
-				).bind(slug, token).first<{ id: number; name: string }>();
+				).bind(slug, realToken).first<{ id: number; name: string }>();
 				if (!playlist) {
 					// Check if token belongs to a folder containing this playlist
 					playlist = await env.DB.prepare(
 						`SELECT p.id, p.name FROM playlists p
 						 JOIN folders f ON p.folder_id = f.id
 						 WHERE p.slug = ? AND f.access_token = ?`
-					).bind(slug, token).first<{ id: number; name: string }>();
+					).bind(slug, realToken).first<{ id: number; name: string }>();
 				}
 				if (!playlist) return new Response("Access denied", { status: 403 });
 
@@ -251,8 +269,22 @@ export default {
 						).bind(payload.order_id, payload.product_id, payload.email).run();
 					}
 
-					// Use internal access_token for download links
-					accessToken = (playlist || folder).access_token;
+					// Generate temporary session token (expires same as JWT)
+					const sessionBytes = new Uint8Array(32);
+					crypto.getRandomValues(sessionBytes);
+					const sessionToken = Array.from(sessionBytes).map(b => b.toString(16).padStart(2, "0")).join("");
+					const realAccessToken = (playlist || folder).access_token;
+
+					// Session expires when the JWT would expire, or 24h max
+					const nowSec = Math.floor(Date.now() / 1000);
+					const ttlSec = payload.exp ? Math.min(payload.exp - nowSec, 86400) : 86400;
+					const expiresAt = new Date(Date.now() + ttlSec * 1000).toISOString();
+
+					await env.DB.prepare(
+						"INSERT INTO session_tokens (token, slug, access_token, created_at, expires_at) VALUES (?, ?, ?, datetime('now'), ?)"
+					).bind(sessionToken, slug, realAccessToken, expiresAt).run();
+
+					accessToken = sessionToken;
 				} else {
 					// Static token flow (existing behavior)
 					[playlist, folder] = await Promise.all([
