@@ -511,11 +511,6 @@ export function renderAdminPage(): string {
 			}
 		} catch (e) { /* ignore parse errors */ }
 
-		// Get duration via Audio element
-		try {
-			meta.duration = await getAudioDuration(file);
-		} catch (e) { /* ignore */ }
-
 		return meta;
 	}
 
@@ -542,17 +537,6 @@ export function renderAdminPage(): string {
 		}
 		if (enc === 3) return new TextDecoder('utf-8').decode(new Uint8Array(bytes));
 		return new TextDecoder('iso-8859-1').decode(new Uint8Array(bytes));
-	}
-
-	function getAudioDuration(file) {
-		return new Promise((resolve) => {
-			const url = URL.createObjectURL(file);
-			const audio = new Audio();
-			audio.preload = 'metadata';
-			audio.onloadedmetadata = () => { resolve(Math.round(audio.duration)); URL.revokeObjectURL(url); };
-			audio.onerror = () => { resolve(0); URL.revokeObjectURL(url); };
-			audio.src = url;
-		});
 	}
 
 	// Pending files to upload: { file, folder, title, artist, album, cover, duration }
@@ -654,32 +638,60 @@ export function renderAdminPage(): string {
 		preparePending(files);
 	}
 
-	// Show preview before uploading - parses ID3 metadata
+	// Parse ID3 tags in parallel with concurrency limit
+	const PARSE_CONCURRENT = 20;
+	async function parseID3Batch(files, onProgress) {
+		const results = new Array(files.length);
+		let nextIdx = 0;
+		let done = 0;
+
+		async function worker() {
+			while (nextIdx < files.length) {
+				const i = nextIdx++;
+				const meta = await parseID3(files[i].file);
+				const fallbackTitle = files[i].file.name.replace(/\\.[^.]+$/, '').replace(/^\\d+[\\s._-]+/, '');
+				results[i] = {
+					file: files[i].file,
+					folder: files[i].folder,
+					title: meta.title || fallbackTitle,
+					artist: meta.artist || 'Desconhecido',
+					album: meta.album || '',
+					cover: meta.cover,
+					duration: meta.duration || 0,
+				};
+				done++;
+				if (onProgress) onProgress(done, files.length);
+			}
+		}
+
+		const workers = [];
+		for (let w = 0; w < Math.min(PARSE_CONCURRENT, files.length); w++) {
+			workers.push(worker());
+		}
+		await Promise.all(workers);
+		return results;
+	}
+
+	// Show preview before uploading - parses ID3 metadata in parallel
 	async function preparePending(files) {
 		document.getElementById('uploadSummary').style.display = 'block';
-		document.getElementById('folderPreview').innerHTML = '<p style="color:#888;font-size:13px;padding:16px;text-align:center;">Lendo metadados das musicas...</p>';
-		document.getElementById('summaryTitle').textContent = 'Processando...';
-		document.getElementById('summaryInfo').textContent = files.length + ' arquivo(s)';
+		document.getElementById('summaryTitle').textContent = 'Lendo metadados...';
+		document.getElementById('summaryInfo').textContent = '0/' + files.length + ' processados';
+		document.getElementById('folderPreview').innerHTML = '<div style="padding:16px;text-align:center;"><div class="progress-bar" style="height:6px;margin-bottom:8px;"><div class="progress-fill" id="parseProgressFill" style="width:0%"></div></div><p style="color:#888;font-size:13px;" id="parseStatus">Lendo metadados das musicas...</p></div>';
 		document.getElementById('uploadQueue').innerHTML = '';
 		document.getElementById('uploadProgress').style.display = 'none';
 
-		// Parse ID3 tags from all files
-		pendingFiles = [];
-		for (const f of files) {
-			const meta = await parseID3(f.file);
-			const fallbackTitle = f.file.name.replace(/\\.[^.]+$/, '').replace(/^\\d+[\\s._-]+/, '');
-			pendingFiles.push({
-				file: f.file,
-				folder: f.folder,
-				title: meta.title || fallbackTitle,
-				artist: meta.artist || 'Desconhecido',
-				album: meta.album || '',
-				cover: meta.cover,
-				duration: meta.duration || 0,
-			});
-		}
+		// Parse ID3 tags in parallel
+		pendingFiles = await parseID3Batch(files, (done, total) => {
+			const pct = Math.round((done / total) * 100);
+			const el = document.getElementById('parseProgressFill');
+			if (el) el.style.width = pct + '%';
+			const status = document.getElementById('parseStatus');
+			if (status) status.textContent = done + '/' + total + ' processados...';
+			document.getElementById('summaryInfo').textContent = done + '/' + total + ' processados';
+		});
 
-		// Group by folder for preview
+		// Group by folder for summary
 		const grouped = {};
 		for (const f of pendingFiles) {
 			const key = f.folder || '(raiz)';
@@ -688,30 +700,40 @@ export function renderAdminPage(): string {
 		}
 
 		const totalSize = pendingFiles.reduce((sum, f) => sum + f.file.size, 0);
-		const sizeMB = (totalSize / (1024 * 1024)).toFixed(1);
+		const sizeMB = totalSize < 1024 * 1024 * 1024
+			? (totalSize / (1024 * 1024)).toFixed(0) + ' MB'
+			: (totalSize / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
 		const withCover = pendingFiles.filter(f => f.cover).length;
 		const withArtist = pendingFiles.filter(f => f.artist !== 'Desconhecido').length;
+		const folderCount = Object.keys(grouped).length;
 
-		document.getElementById('summaryTitle').textContent = Object.keys(grouped).length > 1
-			? Object.keys(grouped).length + ' pastas encontradas'
-			: 'Pasta selecionada';
+		document.getElementById('summaryTitle').textContent = folderCount + ' pasta' + (folderCount !== 1 ? 's' : '') + ' | ' + pendingFiles.length + ' musicas';
 		document.getElementById('summaryInfo').textContent =
-			pendingFiles.length + ' musica' + (pendingFiles.length !== 1 ? 's' : '') + ' - ' + sizeMB + ' MB total'
-			+ ' | ' + withCover + ' com capa | ' + withArtist + ' com artista';
+			sizeMB + ' total | ' + withCover + ' com capa | ' + withArtist + ' com artista';
 
+		// For large batches (>100), show compact folder summary instead of listing every song
 		let previewHtml = '';
+		const isLargeBatch = pendingFiles.length > 100;
+
 		for (const [folder, items] of Object.entries(grouped)) {
-			previewHtml += '<div style="margin-bottom:12px;">';
-			previewHtml += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;font-size:13px;font-weight:600;color:#555;">';
-			previewHtml += '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>';
-			previewHtml += folder + ' <span style="font-weight:400;color:#aaa;">(' + items.length + ')</span></div>';
-			for (const item of items) {
-				const sizeMB = (item.file.size / (1024 * 1024)).toFixed(1);
-				const coverIcon = item.cover ? '<span style="color:#22c55e;" title="Tem capa">&#9679;</span> ' : '<span style="color:#ddd;" title="Sem capa">&#9679;</span> ';
-				previewHtml += '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0 4px 20px;font-size:13px;color:#666;border-bottom:1px solid #f5f5f5;">';
-				previewHtml += '<span>' + coverIcon + '<strong>' + item.title + '</strong> - ' + item.artist + '</span>';
-				previewHtml += '<span style="color:#aaa;">' + sizeMB + ' MB</span>';
-				previewHtml += '</div>';
+			previewHtml += '<div style="margin-bottom:' + (isLargeBatch ? '4px' : '12px') + ';">';
+			previewHtml += '<div style="display:flex;align-items:center;justify-content:space-between;gap:6px;padding:6px 0;font-size:13px;' + (isLargeBatch ? '' : 'font-weight:600;') + 'color:#555;' + (!isLargeBatch ? 'border-bottom:1px solid #f0f0f0;margin-bottom:4px;' : '') + '">';
+			previewHtml += '<span style="display:flex;align-items:center;gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg> ' + folder + '</span>';
+			const folderSize = (items.reduce((s, i) => s + i.file.size, 0) / (1024 * 1024)).toFixed(0);
+			const folderCovers = items.filter(i => i.cover).length;
+			previewHtml += '<span style="color:#aaa;font-size:12px;">' + items.length + ' musicas | ' + folderSize + ' MB | ' + folderCovers + ' capas</span>';
+			previewHtml += '</div>';
+
+			// Only show individual songs for small batches
+			if (!isLargeBatch) {
+				for (const item of items) {
+					const itemSize = (item.file.size / (1024 * 1024)).toFixed(1);
+					const coverIcon = item.cover ? '<span style="color:#22c55e;" title="Tem capa">&#9679;</span> ' : '<span style="color:#ddd;" title="Sem capa">&#9679;</span> ';
+					previewHtml += '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0 4px 20px;font-size:13px;color:#666;border-bottom:1px solid #f5f5f5;">';
+					previewHtml += '<span>' + coverIcon + '<strong>' + item.title + '</strong> - ' + item.artist + '</span>';
+					previewHtml += '<span style="color:#aaa;">' + itemSize + ' MB</span>';
+					previewHtml += '</div>';
+				}
 			}
 			previewHtml += '</div>';
 		}
@@ -720,7 +742,7 @@ export function renderAdminPage(): string {
 	}
 
 	// Concurrency limit for parallel uploads
-	const MAX_CONCURRENT = 5;
+	const MAX_CONCURRENT = 10;
 
 	// Start uploading all pending files (parallel)
 	async function startUpload() {
@@ -744,9 +766,20 @@ export function renderAdminPage(): string {
 		banner.className = 'upload-banner active';
 		document.getElementById('bannerSpinner').style.display = 'block';
 
-		// Build all items in queue first
-		const items = [];
-		for (const pending of pendingFiles) {
+		// For large batches, only show last N items in DOM to avoid slowness
+		const isLarge = total > 200;
+		const MAX_VISIBLE = isLarge ? 30 : total;
+		const items = new Array(total);
+
+		// Build visible items
+		if (!isLarge) {
+			for (let i = 0; i < total; i++) {
+				items[i] = createQueueItem(pendingFiles[i]);
+				queue.appendChild(items[i]);
+			}
+		}
+
+		function createQueueItem(pending) {
 			const item = document.createElement('div');
 			item.className = 'upload-item';
 			const folderLabel = pending.folder ? '<span class="file-folder">' + pending.folder + '</span>' : '';
@@ -755,8 +788,19 @@ export function renderAdminPage(): string {
 				'<div class="status-icon waiting"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle></svg></div>' +
 				'<div class="file-info"><span class="file-name">' + pending.title + '</span>' + folderLabel + '</div>' +
 				'<span class="file-status">' + sizeMB + ' MB</span>';
-			queue.appendChild(item);
-			items.push(item);
+			return item;
+		}
+
+		// For large batches, dynamically add items as they start
+		function ensureItemVisible(index) {
+			if (isLarge && !items[index]) {
+				items[index] = createQueueItem(pendingFiles[index]);
+				queue.appendChild(items[index]);
+				// Remove old items to keep DOM small
+				while (queue.children.length > MAX_VISIBLE) {
+					queue.removeChild(queue.firstChild);
+				}
+			}
 		}
 
 		function updateProgress() {
@@ -781,6 +825,7 @@ export function renderAdminPage(): string {
 		// Upload a single file
 		async function uploadOne(index) {
 			const pending = pendingFiles[index];
+			ensureItemVisible(index);
 			const item = items[index];
 
 			// Mark as uploading
