@@ -10,33 +10,7 @@ export function renderFolderPage(folder: any, playlists: any[], allSongs: Map<nu
 		return (bytes / (1024 * 1024 * 1024)).toFixed(1) + " GB";
 	}
 
-	// Collect preview songs (up to 20, prioritize ones with covers)
-	const allSongsList: any[] = [];
-	for (const p of playlists) {
-		for (const s of (allSongs.get(p.id) || [])) {
-			allSongsList.push({ ...s, playlistId: p.id, playlistCover: p.cover_r2_key });
-		}
-	}
-	const withCover = allSongsList.filter(s => s.cover_r2_key);
-	const withoutCover = allSongsList.filter(s => !s.cover_r2_key);
-	const previewSongs = [...withCover, ...withoutCover].slice(0, 20);
-
-	const previewGrid = previewSongs.map(song => {
-		const coverSrc = song.cover_r2_key
-			? `/cover/${song.id}?token=${esc(token)}`
-			: song.playlistCover
-				? `/playlist-cover/${song.playlistId}?token=${esc(token)}`
-				: "";
-		return `<div class="preview-card">
-			<div class="preview-cover">
-				${coverSrc
-					? `<img src="${coverSrc}" alt="${esc(song.title)}" loading="lazy">`
-					: `<div class="cover-placeholder"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.4"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg></div>`}
-			</div>
-			<span class="preview-title">${esc(song.title)}</span>
-			<span class="preview-artist">${esc(song.artist)}</span>
-		</div>`;
-	}).join("");
+	const SONG_LIMIT = 50;
 
 	// Playlist cards
 	const playlistCards = playlists.map(p => {
@@ -86,16 +60,24 @@ export function renderFolderPage(folder: any, playlists: any[], allSongs: Map<nu
 		}
 
 		let songListHtml = "";
+		let songCount = 0;
+		let hitLimit = false;
 		for (const [subfolder, items] of [...grouped.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+			if (hitLimit) break;
 			if (subfolder) {
 				songListHtml += `<div class="subfolder-header">\ud83d\udcc1 ${esc(subfolder)} <span>(${items.length})</span></div>`;
 			}
 			for (const s of items) {
+				if (songCount >= SONG_LIMIT) { hitLimit = true; break; }
 				songListHtml += `<div class="song-row">
 					<span class="song-title">${esc(s.title)}</span>
 					<span class="song-artist">${esc(s.artist)}</span>
 				</div>`;
+				songCount++;
 			}
+		}
+		if (songs.length > SONG_LIMIT) {
+			songListHtml += `<div class="song-limit-msg">Mostrando ${SONG_LIMIT} de ${songs.length} faixas. Baixe para ver todas.</div>`;
 		}
 
 		// Cover grid (up to 4 covers from songs)
@@ -153,18 +135,6 @@ export function renderFolderPage(folder: any, playlists: any[], allSongs: Map<nu
 	.stats { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #999; }
 	.dot { width: 3px; height: 3px; background: #ccc; border-radius: 50%; }
 
-	/* Preview */
-	.preview-section { margin-bottom: 40px; }
-	.preview-section h2 { font-size: 16px; font-weight: 600; margin-bottom: 16px; color: #555; }
-	.preview-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 16px; }
-	.preview-card { display: flex; flex-direction: column; gap: 6px; }
-	.preview-cover { aspect-ratio: 1; border-radius: 10px; overflow: hidden; background: #f0f0f0; display: flex; align-items: center; justify-content: center; }
-	.preview-cover img { width: 100%; height: 100%; object-fit: cover; }
-	.cover-placeholder { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; color: #ccc; }
-	.preview-title { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-	.preview-artist { font-size: 12px; color: #888; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-	.preview-note { margin-top: 16px; font-size: 13px; color: #aaa; text-align: center; }
-
 	/* Playlists */
 	.playlists-section h2 { font-size: 16px; font-weight: 600; margin-bottom: 16px; color: #555; }
 	.playlist-card { background: #fff; border: 1px solid #eee; border-radius: 14px; margin-bottom: 14px; overflow: hidden; transition: border-color 0.2s; }
@@ -194,6 +164,7 @@ export function renderFolderPage(folder: any, playlists: any[], allSongs: Map<nu
 	.song-row { display: flex; justify-content: space-between; align-items: center; padding: 7px 20px; font-size: 13px; border-top: 1px solid #f8f8f8; }
 	.song-title { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
 	.song-artist { color: #aaa; font-size: 12px; flex-shrink: 0; margin-left: 12px; }
+	.song-limit-msg { padding: 12px 20px; font-size: 13px; color: #999; text-align: center; border-top: 1px solid #f0f0f0; background: #fafafa; }
 
 	/* Buttons */
 	.btn { display: inline-flex; align-items: center; gap: 8px; padding: 10px 20px; border: none; border-radius: 8px; font-size: 14px; font-weight: 500; cursor: pointer; transition: all 0.2s; font-family: inherit; text-decoration: none; }
@@ -206,7 +177,6 @@ export function renderFolderPage(folder: any, playlists: any[], allSongs: Map<nu
 
 	@media (max-width: 640px) {
 		header h1 { font-size: 26px; }
-		.preview-grid { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 12px; }
 		.pl-top { flex-wrap: wrap; gap: 12px; }
 		.pl-downloads { width: 100%; }
 		.pl-downloads .btn { flex: 1; justify-content: center; }
@@ -227,14 +197,6 @@ export function renderFolderPage(folder: any, playlists: any[], allSongs: Map<nu
 				${totalZipSize > 0 ? `<span class="dot"></span><span>${formatSize(totalZipSize)} total</span>` : ""}
 			</div>
 		</header>
-
-		${previewSongs.length > 0 ? `
-		<section class="preview-section">
-			<h2>Uma amostra do que voc\u00ea adquiriu</h2>
-			<div class="preview-grid">${previewGrid}</div>
-			${allSongsList.length > 20 ? `<p class="preview-note">Mostrando ${previewSongs.length} de ${allSongsList.length} m\u00fasicas. Baixe para ter acesso a todas.</p>` : ""}
-		</section>
-		` : ""}
 
 		<section class="playlists-section">
 			<h2>Playlists para Download</h2>

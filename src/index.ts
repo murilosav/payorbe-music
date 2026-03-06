@@ -23,10 +23,19 @@ async function resolveToken(env: Env, token: string): Promise<string> {
 
 async function verifySongAccess(env: Env, songId: number, token: string): Promise<{ r2_key: string; title: string; artist: string; cover_r2_key: string } | null> {
 	const realToken = await resolveToken(env, token);
-	return env.DB.prepare(
+	// Check direct playlist access
+	const direct = await env.DB.prepare(
 		`SELECT s.r2_key, s.title, s.artist, s.cover_r2_key
 		 FROM songs s JOIN playlists p ON s.playlist_id = p.id
 		 WHERE s.id = ? AND p.access_token = ?`
+	).bind(songId, realToken).first<{ r2_key: string; title: string; artist: string; cover_r2_key: string }>();
+	if (direct) return direct;
+	// Check folder access (playlist belongs to a folder with this token)
+	return env.DB.prepare(
+		`SELECT s.r2_key, s.title, s.artist, s.cover_r2_key
+		 FROM songs s JOIN playlists p ON s.playlist_id = p.id
+		 JOIN folders f ON p.folder_id = f.id
+		 WHERE s.id = ? AND f.access_token = ?`
 	).bind(songId, realToken).first();
 }
 
@@ -78,9 +87,17 @@ export default {
 				if (isNaN(playlistId) || !token) return new Response(null, { status: 403 });
 
 				const realToken = await resolveToken(env, token);
-				const playlist = await env.DB.prepare(
+				// Check direct playlist access or folder access
+				let playlist = await env.DB.prepare(
 					"SELECT cover_r2_key FROM playlists WHERE id = ? AND access_token = ?"
 				).bind(playlistId, realToken).first<{ cover_r2_key: string }>();
+				if (!playlist) {
+					playlist = await env.DB.prepare(
+						`SELECT p.cover_r2_key FROM playlists p
+						 JOIN folders f ON p.folder_id = f.id
+						 WHERE p.id = ? AND f.access_token = ?`
+					).bind(playlistId, realToken).first<{ cover_r2_key: string }>();
+				}
 				if (!playlist || !playlist.cover_r2_key) return new Response(null, { status: 404 });
 
 				const object = await env.MUSIC_BUCKET.get(playlist.cover_r2_key);
