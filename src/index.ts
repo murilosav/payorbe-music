@@ -275,10 +275,10 @@ export default {
 					const sessionToken = Array.from(sessionBytes).map(b => b.toString(16).padStart(2, "0")).join("");
 					const realAccessToken = (playlist || folder).access_token;
 
-					// Session expires when the JWT would expire, or 24h max
-					const nowSec = Math.floor(Date.now() / 1000);
-					const ttlSec = payload.exp ? Math.min(payload.exp - nowSec, 86400) : 86400;
-					const expiresAt = new Date(Date.now() + ttlSec * 1000).toISOString();
+					// Session expires when the JWT expires
+					const expiresAt = payload.exp
+						? new Date(payload.exp * 1000).toISOString()
+						: new Date(Date.now() + 7 * 86400 * 1000).toISOString(); // fallback 7 days if no exp
 
 					await env.DB.prepare(
 						"INSERT INTO session_tokens (token, slug, access_token, created_at, expires_at) VALUES (?, ?, ?, datetime('now'), ?)"
