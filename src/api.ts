@@ -48,12 +48,13 @@ export async function handleApi(request: Request, env: Env, path: string): Promi
 	const folderMatch = path.match(/^\/api\/folders\/(\d+)$/);
 	if (folderMatch && request.method === "PUT") {
 		const id = parseInt(folderMatch[1]);
-		const body = await request.json<{ name?: string; slug?: string; description?: string; product_id?: string | null }>();
+		const body = await request.json<{ name?: string; slug?: string; description?: string; product_id?: string | null; jwt_secret?: string | null }>();
 		const fields: string[] = [];
 		const values: any[] = [];
 		if (body.name !== undefined) { fields.push("name = ?"); values.push(body.name); }
 		if (body.description !== undefined) { fields.push("description = ?"); values.push(body.description); }
 		if (body.product_id !== undefined) { fields.push("product_id = ?"); values.push(body.product_id); }
+		if (body.jwt_secret !== undefined) { fields.push("jwt_secret = ?"); values.push(body.jwt_secret); }
 		if (body.slug !== undefined) {
 			const newSlug = body.slug.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/^-|-$/g, "");
 			if (!newSlug) return json({ error: "Slug inv\u00e1lido" }, 400);
@@ -164,7 +165,7 @@ export async function handleApi(request: Request, env: Env, path: string): Promi
 	// PUT /api/playlists/:id - Update playlist
 	if (playlistDeleteMatch && request.method === "PUT") {
 		const id = parseInt(playlistDeleteMatch[1]);
-		const body = await request.json<{ name?: string; slug?: string; description?: string; product_id?: string | null }>();
+		const body = await request.json<{ name?: string; slug?: string; description?: string; product_id?: string | null; jwt_secret?: string | null }>();
 
 		const fields: string[] = [];
 		const values: any[] = [];
@@ -172,6 +173,7 @@ export async function handleApi(request: Request, env: Env, path: string): Promi
 		if (body.name !== undefined) { fields.push("name = ?"); values.push(body.name); }
 		if (body.description !== undefined) { fields.push("description = ?"); values.push(body.description); }
 		if (body.product_id !== undefined) { fields.push("product_id = ?"); values.push(body.product_id); }
+		if (body.jwt_secret !== undefined) { fields.push("jwt_secret = ?"); values.push(body.jwt_secret); }
 		if (body.slug !== undefined) {
 			const newSlug = body.slug.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/^-|-$/g, "");
 			if (!newSlug) return json({ error: "Slug inválido" }, 400);

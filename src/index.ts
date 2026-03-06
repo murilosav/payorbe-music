@@ -10,7 +10,6 @@ export interface Env {
 	DB: D1Database;
 	MUSIC_BUCKET: R2Bucket;
 	ADMIN_KEY?: string;
-	JWT_SECRET?: string;
 }
 
 async function verifySongAccess(env: Env, songId: number, token: string): Promise<{ r2_key: string; title: string; artist: string; cover_r2_key: string } | null> {
@@ -196,21 +195,10 @@ export default {
 				let accessToken = token; // token used for download links
 
 				// Detect JWT (starts with "eyJ") vs static token
-				const isJwt = token.startsWith("eyJ") && env.JWT_SECRET;
+				const isJwt = token.startsWith("eyJ");
 
 				if (isJwt) {
-					// JWT flow: verify signature + expiration, check access limits
-					let payload;
-					try {
-						payload = await verifyJwt(token, env.JWT_SECRET!);
-					} catch (err: any) {
-						const msg = err.message === "Token expirado" ? "expired" : "invalid";
-						return new Response(renderJwtError(msg), {
-							status: 403, headers: { "content-type": "text/html; charset=utf-8" },
-						});
-					}
-
-					// Find by slug only (JWT validity is enough)
+					// Find by slug first to get its jwt_secret
 					[playlist, folder] = await Promise.all([
 						env.DB.prepare("SELECT * FROM playlists WHERE slug = ?").bind(slug).first(),
 						env.DB.prepare("SELECT * FROM folders WHERE slug = ?").bind(slug).first(),
@@ -218,6 +206,24 @@ export default {
 
 					if (!playlist && !folder) {
 						return new Response(renderAccessDenied(), {
+							status: 403, headers: { "content-type": "text/html; charset=utf-8" },
+						});
+					}
+
+					const jwtSecret = (playlist || folder).jwt_secret;
+					if (!jwtSecret) {
+						return new Response(renderAccessDenied(), {
+							status: 403, headers: { "content-type": "text/html; charset=utf-8" },
+						});
+					}
+
+					// Verify JWT with this playlist/folder's secret
+					let payload;
+					try {
+						payload = await verifyJwt(token, jwtSecret);
+					} catch (err: any) {
+						const msg = err.message === "Token expirado" ? "expired" : "invalid";
+						return new Response(renderJwtError(msg), {
 							status: 403, headers: { "content-type": "text/html; charset=utf-8" },
 						});
 					}
