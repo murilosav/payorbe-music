@@ -119,20 +119,49 @@ export function renderAdminPage(): string {
 	.progress-fill { height:100%; background:#1a1a1a; width:0%; transition:width 0.3s; }
 
 	/* Drag & Drop folders */
-	.pl-card[draggable="true"] { cursor:grab; }
+	.pl-card[draggable="true"] { cursor:grab; position:relative; }
 	.pl-card[draggable="true"]:active { cursor:grabbing; }
-	.pl-card.dragging { opacity:0.4; }
-	.folder-drop-zone { transition:all 0.2s; }
-	.folder-drop-zone.drag-over { border-color:#4ade80; background:#f0fdf4; box-shadow:0 0 0 2px rgba(74,222,128,0.3); }
+	.pl-card.dragging { opacity:0.35; transform:scale(0.98); }
+	.drag-handle { color:#ccc; margin-right:2px; flex-shrink:0; cursor:grab; }
+	.folder-drop-zone { transition:all 0.2s; border-radius:14px; border:2px solid transparent; }
+	.folder-drop-zone.drag-over { border-color:#4ade80; background:#f0fdf4; }
 	.folder-drop-zone.drag-over .folder-drop-hint { display:block; }
-	.folder-drop-hint { display:none; font-size:11px; color:#16a34a; padding:6px 0 0 66px; font-weight:500; }
-	.standalone-zone { transition:all 0.2s; min-height:20px; padding:4px 0; border-radius:8px; }
-	.standalone-zone.drag-over { background:#fef3c7; border:2px dashed #d97706; }
+	.folder-drop-hint { display:none; font-size:12px; color:#16a34a; padding:8px 20px; font-weight:500; text-align:center; }
+	.standalone-zone { transition:all 0.2s; min-height:20px; padding:4px 0; border-radius:14px; border:2px solid transparent; }
+	.standalone-zone.drag-over { background:#fef3c7; border-color:#d97706; }
 
-	/* Folder edit inline */
-	.folder-edit-row { display:flex; gap:8px; padding:8px 0 0 66px; align-items:center; flex-wrap:wrap; }
-	.folder-edit-row input { padding:6px 10px; border:1px solid #ddd; border-radius:6px; font-size:12px; font-family:inherit; }
-	.folder-edit-row .btn { padding:4px 12px; font-size:11px; }
+	/* Folder card */
+	.folder-card { background:linear-gradient(135deg, #f8f8ff 0%, #f0f0ff 100%); border:1px solid #e0e0f0; border-radius:12px; margin-bottom:4px; }
+	.folder-card .pl-card-top { padding:16px; }
+	.folder-children { padding:0 0 8px 24px; }
+	.folder-children .pl-card { border-left:2px solid #e8e8f0; margin-left:8px; border-top-left-radius:0; border-bottom-left-radius:0; }
+	.folder-empty { padding:12px 20px 12px 44px; color:#bbb; font-size:13px; font-style:italic; }
+
+	/* Folder edit panel */
+	.folder-edit-panel { background:#fff; border:1px solid #e8e8f0; border-radius:10px; margin:0 16px 12px; padding:16px; display:none; }
+	.folder-edit-panel.open { display:block; }
+	.folder-edit-panel .form-row { display:flex; gap:10px; margin-bottom:10px; }
+	.folder-edit-panel .form-group { flex:1; margin-bottom:0; }
+	.folder-edit-panel .form-group label { font-size:10px; }
+	.folder-edit-panel input, .folder-edit-panel textarea { font-size:13px; }
+	.folder-edit-panel .edit-actions { display:flex; gap:8px; justify-content:flex-end; }
+
+	/* Detail sections */
+	.detail-section { background:#fff; border:1px solid #eee; border-radius:12px; padding:20px; margin-bottom:12px; }
+	.detail-section-title { font-size:11px; font-weight:700; color:#aaa; text-transform:uppercase; letter-spacing:0.8px; margin-bottom:14px; display:flex; align-items:center; justify-content:space-between; }
+	.detail-divider { height:1px; background:#f0f0f0; margin:16px 0; }
+	.link-row { display:flex; align-items:center; gap:6px; padding:10px 14px; background:#f8f8f8; border-radius:8px; }
+	.link-row input { flex:1; font-size:12px; padding:0; background:transparent; border:none; color:#555; font-family:monospace; outline:none; }
+
+	/* Responsive */
+	@media (max-width:600px) {
+		.pl-card-top { flex-wrap:wrap; }
+		.pl-actions { width:100%; justify-content:flex-start; margin-top:8px; }
+		.form-row { flex-direction:column; gap:0; }
+		.folder-children { padding-left:12px; }
+		.folder-children .pl-card { margin-left:4px; }
+		.folder-edit-panel { margin:0 8px 12px; }
+	}
 	</style>
 </head>
 <body>
@@ -203,40 +232,47 @@ export function renderAdminPage(): string {
 				Voltar
 			</button>
 
-			<!-- Info -->
-			<div class="card section">
-				<div class="section-title">
-					<span>Informa\u00e7\u00f5es</span>
-					<button class="btn btn-primary btn-sm" onclick="savePlaylist()" id="saveBtn" style="display:none;">Salvar</button>
+			<!-- Playlist Info -->
+			<div class="detail-section">
+				<div class="detail-section-title">
+					<span>Informa\u00e7\u00f5es da Playlist</span>
+					<button class="btn btn-primary btn-sm" onclick="savePlaylist()" id="saveBtn" style="display:none;">Salvar Altera\u00e7\u00f5es</button>
 				</div>
 				<div style="display:flex;gap:16px;align-items:flex-start;">
-					<div class="pl-cover" id="detailCover" style="width:64px;height:64px;cursor:pointer;" onclick="document.getElementById('detailCoverInput').click()" title="Alterar capa">
+					<div class="pl-cover" id="detailCover" style="width:72px;height:72px;cursor:pointer;border-radius:12px;" onclick="document.getElementById('detailCoverInput').click()" title="Alterar capa">
 						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
 					</div>
 					<input type="file" id="detailCoverInput" accept="image/*" style="display:none;" onchange="uploadDetailCover(this.files[0])">
 					<div style="flex:1;">
 						<div class="form-row">
 							<div class="form-group"><label>Nome</label><input type="text" id="detailName" oninput="onDetailChange()"></div>
-							<div class="form-group"><label>Slug</label><input type="text" id="detailSlug" oninput="onDetailChange()"></div>
+							<div class="form-group"><label>Slug (URL)</label><input type="text" id="detailSlug" oninput="onDetailChange()"></div>
 						</div>
-						<div class="form-row">
-							<div class="form-group"><label>Descri\u00e7\u00e3o</label><input type="text" id="detailDesc" oninput="onDetailChange()"></div>
-						</div>
-						<div class="form-row">
-							<div class="form-group"><label>JWT Secrets (1 por linha)</label><textarea id="detailJwtSecret" oninput="onDetailChange()" placeholder="Cole aqui as chaves secretas do checkout (1 por linha)" rows="3" style="font-size:12px;font-family:monospace;width:100%;padding:10px 14px;border:1px solid #ddd;border-radius:8px;resize:vertical;"></textarea></div>
-						</div>
+						<div class="form-group"><label>Descri\u00e7\u00e3o</label><input type="text" id="detailDesc" oninput="onDetailChange()"></div>
 					</div>
 				</div>
-				<div style="display:flex;align-items:center;gap:6px;margin-top:12px;">
-					<input type="text" id="detailLink" readonly onclick="this.select()" style="flex:1;font-size:11px;padding:6px 10px;background:#f8f8f8;border:1px solid #eee;color:#666;cursor:text;">
+
+				<div class="detail-divider"></div>
+
+				<!-- Link de acesso -->
+				<div class="detail-section-title" style="margin-bottom:8px;"><span>Link de Acesso (token est\u00e1tico)</span></div>
+				<div class="link-row">
+					<input type="text" id="detailLink" readonly onclick="this.select()">
 					<button class="btn btn-ghost btn-sm" onclick="copyDetailLink()">Copiar</button>
 					<a id="detailOpenLink" href="#" target="_blank" class="btn btn-ghost btn-sm" style="text-decoration:none;">Abrir</a>
 				</div>
+
+				<div class="detail-divider"></div>
+
+				<!-- JWT Secrets -->
+				<div class="detail-section-title" style="margin-bottom:8px;"><span>JWT Secrets (checkout externo)</span></div>
+				<p style="font-size:12px;color:#aaa;margin-bottom:8px;">Cole as chaves secretas do checkout. Uma por linha. Permite m\u00faltiplos checkouts para a mesma playlist.</p>
+				<textarea id="detailJwtSecret" oninput="onDetailChange()" placeholder="Nenhuma chave configurada" rows="3" style="font-size:13px;font-family:'SF Mono',Menlo,monospace;width:100%;padding:10px 14px;border:1px solid #ddd;border-radius:8px;resize:vertical;line-height:1.6;"></textarea>
 			</div>
 
 			<!-- ZIP -->
-			<div class="card section">
-				<div class="section-title">
+			<div class="detail-section">
+				<div class="detail-section-title">
 					<span>Download ZIP</span>
 					<div style="display:flex;gap:8px;align-items:center;">
 						<span id="zipBadge"></span>
@@ -246,7 +282,7 @@ export function renderAdminPage(): string {
 				<div id="zipInfo" style="font-size:13px;color:#888;"></div>
 				<div id="zipProgress" style="display:none;">
 					<div style="display:flex;align-items:center;gap:8px;margin-top:8px;">
-						<div class="spinner" style="width:14px;height:14px;border:2px solid rgba(0,0,0,0.1);border-top-color:#1a1a1a;border-radius:50;animation:spin 0.8s linear infinite;"></div>
+						<div class="spinner" style="width:14px;height:14px;border:2px solid rgba(0,0,0,0.1);border-top-color:#1a1a1a;border-radius:50%;animation:spin 0.8s linear infinite;"></div>
 						<span id="zipStatus" style="font-size:12px;color:#666;">Preparando...</span>
 					</div>
 					<div class="progress-bar" style="height:4px;margin-top:6px;"><div class="progress-fill" id="zipBar"></div></div>
@@ -254,8 +290,8 @@ export function renderAdminPage(): string {
 			</div>
 
 			<!-- Upload -->
-			<div class="card section">
-				<div class="section-title"><span>Upload de M\u00fasicas</span></div>
+			<div class="detail-section">
+				<div class="detail-section-title"><span>Upload de M\u00fasicas</span></div>
 				<div style="display:flex;gap:8px;margin-bottom:12px;">
 					<button class="btn btn-primary" onclick="document.getElementById('folderInput').click()" style="flex:1;">
 						<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
@@ -302,8 +338,8 @@ export function renderAdminPage(): string {
 			</div>
 
 			<!-- Songs -->
-			<div class="card section">
-				<div class="section-title">
+			<div class="detail-section">
+				<div class="detail-section-title">
 					<span id="songsTitle">M\u00fasicas</span>
 					<div style="display:flex;gap:8px;align-items:center;">
 						<button class="btn btn-danger btn-sm" id="bulkDeleteBtn" style="display:none;" onclick="bulkDeleteSongs()">Excluir selecionadas</button>
@@ -440,8 +476,11 @@ export function renderAdminPage(): string {
 			? '<img src="/api/playlists/' + p.id + '/cover-preview" style="width:100%;height:100%;object-fit:cover;">'
 			: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>';
 
-		return '<div class="pl-card" draggable="true" ondragstart="onDragStart(event,'+idx+')" ondragend="onDragEnd(event)" style="margin-left:0;">' +
+		var hasJwt = !!p.jwt_secret;
+
+		return '<div class="pl-card" draggable="true" ondragstart="onDragStart(event,'+idx+')" ondragend="onDragEnd(event)">' +
 			'<div class="pl-card-top">' +
+				'<div class="drag-handle" title="Arraste para mover"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.5"/><circle cx="15" cy="6" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="18" r="1.5"/><circle cx="15" cy="18" r="1.5"/></svg></div>' +
 				'<div class="pl-cover">' + coverHtml + '</div>' +
 				'<div class="pl-info">' +
 					'<div class="pl-name">' + p.name + '</div>' +
@@ -449,6 +488,7 @@ export function renderAdminPage(): string {
 						'<span>' + songCount + ' m\u00fasica' + (songCount !== 1 ? 's' : '') + '</span>' +
 						'<span>&middot;</span><span>' + totalSizeMB + ' MB</span>' +
 						'<span>&middot;</span>' + zipBadge +
+						(hasJwt ? '<span>&middot;</span><span class="badge badge-success" style="font-size:10px;padding:2px 8px;">JWT</span>' : '') +
 					'</div>' +
 				'</div>' +
 				'<div class="pl-actions">' +
@@ -487,46 +527,59 @@ export function renderAdminPage(): string {
 				if (playlistsCache[pi].folder_id === folder.id) folderPlaylists.push(pi);
 			}
 
-			html += '<div class="folder-drop-zone" data-folder-id="'+folder.id+'" ondragover="onFolderDragOver(event)" ondragleave="onFolderDragLeave(event)" ondrop="onFolderDrop(event,'+folder.id+')" style="margin-bottom:16px;">' +
-				'<div class="pl-card" style="background:#f8f8ff;border-color:#e0e0f0;">' +
+			var hasJwt = !!(folder.jwt_secret);
+		html += '<div class="folder-drop-zone" data-folder-id="'+folder.id+'" ondragover="onFolderDragOver(event)" ondragleave="onFolderDragLeave(event)" ondrop="onFolderDrop(event,'+folder.id+')" style="margin-bottom:16px;">' +
+				'<div class="folder-card">' +
 					'<div class="pl-card-top">' +
-						'<div style="font-size:24px;width:52px;text-align:center;">\ud83d\udcc1</div>' +
+						'<div style="font-size:22px;width:44px;text-align:center;flex-shrink:0;">\ud83d\udcc1</div>' +
 						'<div class="pl-info">' +
 							'<div class="pl-name">' + folder.name + '</div>' +
 							'<div class="pl-stats">' +
 								'<span>' + folderPlaylists.length + ' playlist' + (folderPlaylists.length !== 1 ? 's' : '') + '</span>' +
 								(folder.description ? '<span>&middot;</span><span>' + folder.description + '</span>' : '') +
-								'<span>&middot;</span><span style="color:#aaa;">/' + folder.slug + '</span>' +
+								'<span>&middot;</span><span style="color:#bbb;font-family:monospace;font-size:11px;">/' + folder.slug + '</span>' +
+								(hasJwt ? '<span>&middot;</span><span class="badge badge-success" style="font-size:10px;padding:2px 8px;">JWT</span>' : '') +
 							'</div>' +
 						'</div>' +
 						'<div class="pl-actions">' +
-							'<button class="btn btn-ghost btn-sm" onclick="toggleFolderEdit('+folder.id+')">Editar</button>' +
+							'<button class="btn btn-ghost btn-sm" onclick="toggleFolderEdit('+folder.id+')">' +
+								'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>' +
+								' Editar</button>' +
 							'<button class="btn btn-ghost btn-sm" onclick="copyLink(\\''+folderLink+'\\')">Link</button>' +
 							'<button class="btn btn-danger btn-sm" onclick="deleteFolder('+folder.id+', \\''+folder.name.replace(/'/g, "\\\\'")+'\\')">Excluir</button>' +
 						'</div>' +
 					'</div>' +
 				'</div>' +
-				'<div id="folderEdit'+folder.id+'" style="display:none;" class="folder-edit-row">' +
-					'<input type="text" id="feditName'+folder.id+'" value="'+folder.name.replace(/"/g, '&quot;')+'" placeholder="Nome" style="flex:2;">' +
-					'<input type="text" id="feditSlug'+folder.id+'" value="'+folder.slug+'" placeholder="Slug" style="flex:1;">' +
-					'<input type="text" id="feditDesc'+folder.id+'" value="'+(folder.description||'').replace(/"/g, '&quot;')+'" placeholder="Descri\u00e7\u00e3o" style="flex:2;">' +
-					'<textarea id="feditJwt'+folder.id+'" placeholder="JWT Secrets (1 por linha)" rows="2" style="flex:1;font-size:11px;font-family:monospace;padding:6px 10px;border:1px solid #ddd;border-radius:6px;resize:vertical;">'+(folder.jwt_secret||'')+'</textarea>' +
-					'<button class="btn btn-primary btn-sm" onclick="saveFolder('+folder.id+')">Salvar</button>' +
-					'<button class="btn btn-ghost btn-sm" onclick="toggleFolderEdit('+folder.id+')">Cancelar</button>' +
+				'<div id="folderEdit'+folder.id+'" class="folder-edit-panel">' +
+					'<div class="form-row">' +
+						'<div class="form-group" style="flex:2;"><label>Nome</label><input type="text" id="feditName'+folder.id+'" value="'+folder.name.replace(/"/g, '&quot;')+'"></div>' +
+						'<div class="form-group" style="flex:1;"><label>Slug</label><input type="text" id="feditSlug'+folder.id+'" value="'+folder.slug+'"></div>' +
+					'</div>' +
+					'<div class="form-row">' +
+						'<div class="form-group"><label>Descri\u00e7\u00e3o</label><input type="text" id="feditDesc'+folder.id+'" value="'+(folder.description||'').replace(/"/g, '&quot;')+'"></div>' +
+					'</div>' +
+					'<div class="form-group"><label>JWT Secrets (1 por linha)</label>' +
+						'<textarea id="feditJwt'+folder.id+'" placeholder="Cole as chaves secretas do checkout" rows="2" style="font-size:12px;font-family:monospace;width:100%;padding:8px 12px;border:1px solid #ddd;border-radius:8px;resize:vertical;line-height:1.5;">'+(folder.jwt_secret||'')+'</textarea>' +
+					'</div>' +
+					'<div class="edit-actions">' +
+						'<button class="btn btn-ghost btn-sm" onclick="toggleFolderEdit('+folder.id+')">Cancelar</button>' +
+						'<button class="btn btn-primary btn-sm" onclick="saveFolder('+folder.id+')">Salvar</button>' +
+					'</div>' +
 				'</div>' +
-				'<div class="folder-drop-hint">Solte aqui para mover para esta pasta</div>';
+				'<div class="folder-drop-hint">Solte aqui para mover para esta pasta</div>' +
+				'<div class="folder-children">';
 
-			// Playlists inside this folder (indented)
+			// Playlists inside this folder
 			for (var fpi = 0; fpi < folderPlaylists.length; fpi++) {
 				var pIdx = folderPlaylists[fpi];
-				html += '<div style="margin-left:32px;">' + renderPlaylistCard(playlistsCache[pIdx], pIdx) + '</div>';
+				html += renderPlaylistCard(playlistsCache[pIdx], pIdx);
 			}
 
 			if (folderPlaylists.length === 0) {
-				html += '<div style="margin-left:32px;padding:12px 16px;color:#aaa;font-size:13px;font-style:italic;">Arraste playlists para c\u00e1.</div>';
+				html += '<div class="folder-empty">Arraste playlists para c\u00e1</div>';
 			}
 
-			html += '</div>';
+			html += '</div></div>';
 		}
 
 		// Standalone playlists (not in any folder)
@@ -699,7 +752,7 @@ export function renderAdminPage(): string {
 
 	function toggleFolderEdit(id) {
 		var el = document.getElementById('folderEdit' + id);
-		el.style.display = el.style.display === 'none' ? 'flex' : 'none';
+		el.classList.toggle('open');
 	}
 
 	async function saveFolder(id) {
