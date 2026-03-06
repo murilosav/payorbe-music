@@ -78,16 +78,21 @@ export function renderPlaylistPage(playlist: any, songs: any[], accessToken: str
 		<header>
 			<span class="brand">Patacos</span>
 			<h1>${esc(playlist.name)}</h1>
+			<p class="welcome">Obrigado pela sua compra! Aqui estao suas musicas prontas para download. Esperamos que voce aproveite cada faixa.</p>
 			${playlist.description ? `<p class="description">${esc(playlist.description)}</p>` : ""}
 			<div class="stats">
 				<span>${totalSongs} musica${totalSongs !== 1 ? "s" : ""}</span>
 				${totalFolders > 1 ? `<span class="dot"></span><span>${totalFolders} pastas</span>` : ""}
 			</div>
+			<a href="${downloadAllUrl}" class="btn btn-primary btn-hero">
+				<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+				Baixar Todas as Musicas (ZIP)
+			</a>
 		</header>
 
 		${previewSongs.length > 0 ? `
 		<section class="preview-section">
-			<h2>Preview</h2>
+			<h2>Uma amostra do que voce adquiriu</h2>
 			<div class="preview-grid">
 				${previewGrid}
 			</div>
@@ -176,6 +181,19 @@ function getStyles(): string {
 	}
 
 	.dot { width: 3px; height: 3px; background: #ccc; border-radius: 50%; }
+
+	.welcome {
+		color: #555;
+		font-size: 15px;
+		line-height: 1.6;
+		margin-bottom: 12px;
+	}
+
+	.btn-hero {
+		margin-top: 20px;
+		padding: 14px 28px;
+		font-size: 16px;
+	}
 
 	/* Preview section */
 	.preview-section {
