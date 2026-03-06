@@ -68,7 +68,7 @@ export function renderPlaylistPage(playlist: any, songs: any[]): string {
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<title>${esc(playlist.name)} - PayOrbe Music</title>
+	<title>${esc(playlist.name)} - Patacos</title>
 	<link rel="preconnect" href="https://fonts.googleapis.com">
 	<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 	<style>${getStyles()}</style>
@@ -79,7 +79,7 @@ export function renderPlaylistPage(playlist: any, songs: any[]): string {
 			<div class="header-content">
 				<div class="playlist-info">
 					<div class="breadcrumb">
-						<a href="/">PayOrbe Music</a>
+						<a href="/">Patacos</a>
 						<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg>
 						<span>${esc(playlist.name)}</span>
 					</div>
@@ -96,28 +96,31 @@ export function renderPlaylistPage(playlist: any, songs: any[]): string {
 
 		<div class="toolbar">
 			<div class="toolbar-left">
-				<button class="btn btn-primary" onclick="playAll()">
-					<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
-					Reproduzir Tudo
+				<button class="btn btn-primary" onclick="downloadAllSongs()">
+					<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+					Baixar Todas as Musicas
 				</button>
-				<button class="btn btn-secondary" onclick="shuffleAll()">
-					<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 3 21 3 21 8"></polyline><line x1="4" y1="20" x2="21" y2="3"></line><polyline points="21 16 21 21 16 21"></polyline><line x1="15" y1="15" x2="21" y2="21"></line><line x1="4" y1="4" x2="9" y2="9"></line></svg>
-					Aleatorio
-				</button>
-			</div>
-			<div class="toolbar-right">
 				<div class="selected-info" id="selectedInfo" style="display:none">
 					<span id="selectedCount">0</span> selecionada(s)
-					<button class="btn btn-primary btn-sm" onclick="downloadSelected()">
+					<button class="btn btn-secondary btn-sm" onclick="downloadSelected()">
 						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
 						Baixar Selecionadas
 					</button>
 				</div>
-				<button class="btn btn-outline" onclick="downloadAllSongs()">
-					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-					Baixar Tudo
+			</div>
+			<div class="toolbar-right">
+				<button class="btn btn-secondary btn-sm" onclick="playAll()">
+					<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+					Preview (30s)
 				</button>
 			</div>
+		</div>
+
+		<!-- Preview limit notice -->
+		<div class="preview-notice" id="previewNotice" style="display:none">
+			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+			<span>Preview limitado a 30 segundos. Baixe as musicas para ouvir completas.</span>
+			<button class="btn btn-primary btn-sm" onclick="downloadCurrentSong()">Baixar esta musica</button>
 		</div>
 
 		<div class="content">
@@ -170,14 +173,13 @@ export function renderPlaylistPage(playlist: any, songs: any[]): string {
 	<audio id="audioEl" preload="metadata"></audio>
 
 	<script>
+	const PREVIEW_LIMIT = 30; // seconds
 	const allSongs = ${JSON.stringify(songs.map(s => ({ id: s.id, title: s.title, artist: s.artist, album: s.album, duration: s.duration, folder: s.folder, cover_r2_key: s.cover_r2_key })))};
 	let currentIndex = -1;
 	let isPlaying = false;
-	let shuffled = false;
 	let playQueue = [...allSongs];
 
 	const audio = document.getElementById('audioEl');
-	const playBtn = document.getElementById('playBtn');
 	const playIcon = document.getElementById('playIcon');
 	const pauseIcon = document.getElementById('pauseIcon');
 	const playerTitle = document.getElementById('playerTitle');
@@ -187,6 +189,7 @@ export function renderPlaylistPage(playlist: any, songs: any[]): string {
 	const progressBar = document.getElementById('progressBar');
 	const currentTimeEl = document.getElementById('currentTime');
 	const totalTimeEl = document.getElementById('totalTime');
+	const previewNotice = document.getElementById('previewNotice');
 
 	function playSong(id) {
 		const idx = playQueue.findIndex(s => s.id === id);
@@ -202,8 +205,8 @@ export function renderPlaylistPage(playlist: any, songs: any[]): string {
 		audio.src = '/stream/' + song.id;
 		audio.play();
 		isPlaying = true;
+		previewNotice.style.display = 'none';
 		updatePlayerUI(song);
-		highlightCurrent();
 	}
 
 	function updatePlayerUI(song) {
@@ -221,14 +224,6 @@ export function renderPlaylistPage(playlist: any, songs: any[]): string {
 		document.querySelectorAll('.song-card').forEach(el => el.classList.remove('playing'));
 		const card = document.querySelector('.song-card[data-song-id="' + song.id + '"]');
 		if (card) card.classList.add('playing');
-	}
-
-	function highlightCurrent() {
-		document.querySelectorAll('.song-card').forEach(el => el.classList.remove('playing'));
-		if (currentIndex >= 0 && playQueue[currentIndex]) {
-			const card = document.querySelector('.song-card[data-song-id="' + playQueue[currentIndex].id + '"]');
-			if (card) card.classList.add('playing');
-		}
 	}
 
 	function togglePlay() {
@@ -263,15 +258,7 @@ export function renderPlaylistPage(playlist: any, songs: any[]): string {
 	}
 
 	function playAll() {
-		shuffled = false;
 		playQueue = [...allSongs];
-		currentIndex = 0;
-		loadAndPlay();
-	}
-
-	function shuffleAll() {
-		shuffled = true;
-		playQueue = [...allSongs].sort(() => Math.random() - 0.5);
 		currentIndex = 0;
 		loadAndPlay();
 	}
@@ -287,18 +274,28 @@ export function renderPlaylistPage(playlist: any, songs: any[]): string {
 		return m + ':' + (s < 10 ? '0' : '') + s;
 	}
 
+	// Preview limit: stop at 30 seconds and show download prompt
 	audio.addEventListener('timeupdate', () => {
 		if (audio.duration) {
-			const pct = (audio.currentTime / audio.duration) * 100;
-			progressFill.style.width = pct + '%';
+			const pct = (audio.currentTime / Math.min(audio.duration, PREVIEW_LIMIT)) * 100;
+			progressFill.style.width = Math.min(pct, 100) + '%';
 			currentTimeEl.textContent = formatTime(audio.currentTime);
-			totalTimeEl.textContent = formatTime(audio.duration);
+			totalTimeEl.textContent = formatTime(PREVIEW_LIMIT);
+
+			// Stop at preview limit
+			if (audio.currentTime >= PREVIEW_LIMIT) {
+				audio.pause();
+				isPlaying = false;
+				playIcon.style.display = 'block';
+				pauseIcon.style.display = 'none';
+				previewNotice.style.display = 'flex';
+			}
 		}
 	});
 
 	audio.addEventListener('ended', () => nextSong());
 
-	// Progress bar seeking
+	// Disable seeking past preview limit
 	let isDragging = false;
 	progressBar.addEventListener('mousedown', (e) => { isDragging = true; seek(e); });
 	document.addEventListener('mousemove', (e) => { if (isDragging) seek(e); });
@@ -310,14 +307,16 @@ export function renderPlaylistPage(playlist: any, songs: any[]): string {
 	function seek(e) {
 		const rect = progressBar.getBoundingClientRect();
 		const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-		if (audio.duration) audio.currentTime = pct * audio.duration;
+		const maxTime = Math.min(audio.duration || PREVIEW_LIMIT, PREVIEW_LIMIT);
+		audio.currentTime = pct * maxTime;
 	}
 
 	function seekTouch(e) {
 		if (e.touches.length > 0) {
 			const rect = progressBar.getBoundingClientRect();
 			const pct = Math.max(0, Math.min(1, (e.touches[0].clientX - rect.left) / rect.width));
-			if (audio.duration) audio.currentTime = pct * audio.duration;
+			const maxTime = Math.min(audio.duration || PREVIEW_LIMIT, PREVIEW_LIMIT);
+			audio.currentTime = pct * maxTime;
 		}
 	}
 
@@ -331,16 +330,22 @@ export function renderPlaylistPage(playlist: any, songs: any[]): string {
 		document.body.removeChild(a);
 	}
 
+	function downloadCurrentSong() {
+		if (currentIndex >= 0 && playQueue[currentIndex]) {
+			downloadSong(playQueue[currentIndex].id);
+		}
+	}
+
 	function downloadAllSongs() {
 		allSongs.forEach((song, i) => {
-			setTimeout(() => downloadSong(song.id), i * 500);
+			setTimeout(() => downloadSong(song.id), i * 300);
 		});
 	}
 
 	function downloadSelected() {
 		const checked = document.querySelectorAll('.song-select:checked');
 		checked.forEach((cb, i) => {
-			setTimeout(() => downloadSong(cb.dataset.songId), i * 500);
+			setTimeout(() => downloadSong(cb.dataset.songId), i * 300);
 		});
 	}
 
@@ -364,7 +369,7 @@ export function renderPlaylistPage(playlist: any, songs: any[]): string {
 			const folder = btn.dataset.folder;
 			const folderSongs = allSongs.filter(s => (s.folder || 'Todas as Musicas') === folder);
 			folderSongs.forEach((song, i) => {
-				setTimeout(() => downloadSong(song.id), i * 500);
+				setTimeout(() => downloadSong(song.id), i * 300);
 			});
 		});
 	});
@@ -908,6 +913,21 @@ function getStyles(): string {
 		border-radius: 50%;
 		cursor: pointer;
 	}
+
+	/* Preview notice */
+	.preview-notice {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		padding: 12px 16px;
+		background: #fef3c7;
+		border: 1px solid #fde68a;
+		border-radius: 10px;
+		margin-bottom: 24px;
+		font-size: 13px;
+		color: #92400e;
+	}
+	.preview-notice span { flex: 1; }
 
 	/* Responsive */
 	@media (max-width: 640px) {

@@ -28,19 +28,26 @@ export async function handleApi(request: Request, env: Env, path: string): Promi
 		return json(playlist, 201);
 	}
 
-	// DELETE /api/playlists/:id
+	// DELETE /api/playlists/:id - Fast parallel delete
 	const playlistDeleteMatch = path.match(/^\/api\/playlists\/(\d+)$/);
 	if (playlistDeleteMatch && request.method === "DELETE") {
 		const id = parseInt(playlistDeleteMatch[1]);
-		// Delete all songs' R2 objects first
 		const songs = await env.DB.prepare("SELECT r2_key, cover_r2_key FROM songs WHERE playlist_id = ?").bind(id).all();
+
+		// Delete all R2 objects in parallel
+		const deletePromises: Promise<void>[] = [];
 		for (const song of songs.results) {
 			const s = song as { r2_key: string; cover_r2_key: string };
-			if (s.r2_key) await env.MUSIC_BUCKET.delete(s.r2_key);
-			if (s.cover_r2_key) await env.MUSIC_BUCKET.delete(s.cover_r2_key);
+			if (s.r2_key) deletePromises.push(env.MUSIC_BUCKET.delete(s.r2_key));
+			if (s.cover_r2_key) deletePromises.push(env.MUSIC_BUCKET.delete(s.cover_r2_key));
 		}
-		await env.DB.prepare("DELETE FROM songs WHERE playlist_id = ?").bind(id).run();
-		await env.DB.prepare("DELETE FROM playlists WHERE id = ?").bind(id).run();
+		await Promise.all(deletePromises);
+
+		// Delete from DB in parallel
+		await Promise.all([
+			env.DB.prepare("DELETE FROM songs WHERE playlist_id = ?").bind(id).run(),
+			env.DB.prepare("DELETE FROM playlists WHERE id = ?").bind(id).run(),
+		]);
 		return json({ success: true });
 	}
 
@@ -57,10 +64,11 @@ export async function handleApi(request: Request, env: Env, path: string): Promi
 		return json(results);
 	}
 
-	// POST /api/songs/upload - Upload a song file
+	// POST /api/songs/upload - Upload a song file (with optional cover)
 	if (path === "/api/songs/upload" && request.method === "POST") {
 		const formData = await request.formData();
 		const file = formData.get("file") as File | null;
+		const coverFile = formData.get("cover") as File | null;
 		const playlistId = formData.get("playlist_id") as string;
 		const title = formData.get("title") as string;
 		const artist = formData.get("artist") as string || "Desconhecido";
@@ -73,25 +81,39 @@ export async function handleApi(request: Request, env: Env, path: string): Promi
 			return json({ error: "file, playlist_id, and title are required" }, 400);
 		}
 
-		// Get playlist slug for organizing in R2
 		const playlist = await env.DB.prepare("SELECT slug FROM playlists WHERE id = ?")
 			.bind(parseInt(playlistId)).first<{ slug: string }>();
 		if (!playlist) return json({ error: "Playlist not found" }, 404);
 
-		// Build R2 key: playlists/{slug}/{folder}/{filename}
 		const folderPath = folder ? `${folder}/` : "";
 		const r2Key = `playlists/${playlist.slug}/${folderPath}${file.name}`;
 
-		// Upload to R2
-		await env.MUSIC_BUCKET.put(r2Key, file.stream(), {
-			httpMetadata: { contentType: file.type || "audio/mpeg" },
-		});
+		// Upload song to R2
+		const uploadPromises: Promise<any>[] = [
+			env.MUSIC_BUCKET.put(r2Key, file.stream(), {
+				httpMetadata: { contentType: file.type || "audio/mpeg" },
+			}),
+		];
+
+		// Upload cover to R2 if provided
+		let coverR2Key = "";
+		if (coverFile && coverFile.size > 0) {
+			const ext = coverFile.type === "image/png" ? "png" : "jpg";
+			coverR2Key = r2Key.replace(/\.[^.]+$/, `_cover.${ext}`);
+			uploadPromises.push(
+				env.MUSIC_BUCKET.put(coverR2Key, coverFile.stream(), {
+					httpMetadata: { contentType: coverFile.type || "image/jpeg" },
+				})
+			);
+		}
+
+		await Promise.all(uploadPromises);
 
 		// Insert into DB
 		await env.DB.prepare(
-			`INSERT INTO songs (playlist_id, title, artist, album, duration, track_number, folder, r2_key, file_size)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-		).bind(parseInt(playlistId), title, artist, album, duration, trackNumber, folder, r2Key, file.size).run();
+			`INSERT INTO songs (playlist_id, title, artist, album, duration, track_number, folder, r2_key, cover_r2_key, file_size)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		).bind(parseInt(playlistId), title, artist, album, duration, trackNumber, folder, r2Key, coverR2Key, file.size).run();
 
 		const song = await env.DB.prepare("SELECT * FROM songs WHERE r2_key = ?").bind(r2Key).first();
 		return json(song, 201);
@@ -125,9 +147,11 @@ export async function handleApi(request: Request, env: Env, path: string): Promi
 			.bind(songId).first<{ r2_key: string; cover_r2_key: string }>();
 		if (!song) return json({ error: "Song not found" }, 404);
 
-		if (song.r2_key) await env.MUSIC_BUCKET.delete(song.r2_key);
-		if (song.cover_r2_key) await env.MUSIC_BUCKET.delete(song.cover_r2_key);
-		await env.DB.prepare("DELETE FROM songs WHERE id = ?").bind(songId).run();
+		const deletes: Promise<void>[] = [];
+		if (song.r2_key) deletes.push(env.MUSIC_BUCKET.delete(song.r2_key));
+		if (song.cover_r2_key) deletes.push(env.MUSIC_BUCKET.delete(song.cover_r2_key));
+		deletes.push(env.DB.prepare("DELETE FROM songs WHERE id = ?").bind(songId).run() as any);
+		await Promise.all(deletes);
 		return json({ success: true });
 	}
 

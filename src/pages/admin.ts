@@ -447,7 +447,115 @@ export function renderAdminPage(): string {
 		return AUDIO_EXT.some(ext => name.toLowerCase().endsWith(ext));
 	}
 
-	// Pending files to upload: { file, folder, title }
+	// --- ID3 Tag Parser (extracts title, artist, album, cover from MP3) ---
+	async function parseID3(file) {
+		const meta = { title: '', artist: '', album: '', cover: null, duration: 0 };
+		try {
+			// Read first 128KB for ID3v2 tags
+			const buffer = await file.slice(0, 131072).arrayBuffer();
+			const view = new DataView(buffer);
+
+			// Check for ID3v2 header
+			if (view.getUint8(0) !== 0x49 || view.getUint8(1) !== 0x44 || view.getUint8(2) !== 0x33) return meta;
+
+			const version = view.getUint8(3);
+			const tagSize = (view.getUint8(6) << 21) | (view.getUint8(7) << 14) | (view.getUint8(8) << 7) | view.getUint8(9);
+			let offset = 10;
+			const end = Math.min(10 + tagSize, buffer.byteLength);
+
+			while (offset < end - 10) {
+				const frameId = String.fromCharCode(view.getUint8(offset), view.getUint8(offset+1), view.getUint8(offset+2), view.getUint8(offset+3));
+				if (frameId.charCodeAt(0) === 0) break;
+
+				let frameSize;
+				if (version === 4) {
+					frameSize = (view.getUint8(offset+4) << 21) | (view.getUint8(offset+5) << 14) | (view.getUint8(offset+6) << 7) | view.getUint8(offset+7);
+				} else {
+					frameSize = (view.getUint8(offset+4) << 24) | (view.getUint8(offset+5) << 16) | (view.getUint8(offset+6) << 8) | view.getUint8(offset+7);
+				}
+
+				if (frameSize <= 0 || offset + 10 + frameSize > end) break;
+
+				const frameData = new Uint8Array(buffer, offset + 10, frameSize);
+
+				if (frameId === 'TIT2' || frameId === 'TPE1' || frameId === 'TALB') {
+					const text = decodeID3Text(frameData);
+					if (frameId === 'TIT2') meta.title = text;
+					else if (frameId === 'TPE1') meta.artist = text;
+					else if (frameId === 'TALB') meta.album = text;
+				}
+
+				if (frameId === 'APIC') {
+					const enc = frameData[0];
+					let i = 1;
+					// Skip MIME type
+					let mime = '';
+					while (i < frameData.length && frameData[i] !== 0) { mime += String.fromCharCode(frameData[i]); i++; }
+					i++; // null terminator
+					i++; // picture type
+					// Skip description
+					if (enc === 1 || enc === 2) {
+						while (i < frameData.length - 1 && !(frameData[i] === 0 && frameData[i+1] === 0)) i++;
+						i += 2;
+					} else {
+						while (i < frameData.length && frameData[i] !== 0) i++;
+						i++;
+					}
+					if (i < frameData.length) {
+						const imgData = frameData.slice(i);
+						meta.cover = new Blob([imgData], { type: mime || 'image/jpeg' });
+					}
+				}
+
+				offset += 10 + frameSize;
+			}
+		} catch (e) { /* ignore parse errors */ }
+
+		// Get duration via Audio element
+		try {
+			meta.duration = await getAudioDuration(file);
+		} catch (e) { /* ignore */ }
+
+		return meta;
+	}
+
+	function decodeID3Text(data) {
+		const enc = data[0];
+		const textBytes = data.slice(1);
+		if (enc === 1 || enc === 2) {
+			// UTF-16
+			const arr = [];
+			const hasBom = textBytes[0] === 0xFF && textBytes[1] === 0xFE;
+			const start = hasBom ? 2 : 0;
+			for (let i = start; i < textBytes.length - 1; i += 2) {
+				const code = textBytes[i] | (textBytes[i+1] << 8);
+				if (code === 0) break;
+				arr.push(code);
+			}
+			return String.fromCharCode(...arr);
+		}
+		// UTF-8 or Latin1
+		const bytes = [];
+		for (let i = 0; i < textBytes.length; i++) {
+			if (textBytes[i] === 0) break;
+			bytes.push(textBytes[i]);
+		}
+		if (enc === 3) return new TextDecoder('utf-8').decode(new Uint8Array(bytes));
+		return new TextDecoder('iso-8859-1').decode(new Uint8Array(bytes));
+	}
+
+	function getAudioDuration(file) {
+		return new Promise((resolve) => {
+			const url = URL.createObjectURL(file);
+			const audio = new Audio();
+			audio.preload = 'metadata';
+			audio.onloadedmetadata = () => { resolve(Math.round(audio.duration)); URL.revokeObjectURL(url); };
+			audio.onerror = () => { resolve(0); URL.revokeObjectURL(url); };
+			audio.src = url;
+		});
+	}
+
+	// Pending files to upload: { file, folder, title, artist, album, cover, duration }
 	let pendingFiles = [];
 
 	// Drag and drop (supports folders)
@@ -546,12 +654,30 @@ export function renderAdminPage(): string {
 		preparePending(files);
 	}
 
-	// Show preview before uploading
-	function preparePending(files) {
-		pendingFiles = files.map(f => ({
-			...f,
-			title: f.file.name.replace(/\\.[^.]+$/, '').replace(/^\\d+[\\s._-]+/, '')
-		}));
+	// Show preview before uploading - parses ID3 metadata
+	async function preparePending(files) {
+		document.getElementById('uploadSummary').style.display = 'block';
+		document.getElementById('folderPreview').innerHTML = '<p style="color:#888;font-size:13px;padding:16px;text-align:center;">Lendo metadados das musicas...</p>';
+		document.getElementById('summaryTitle').textContent = 'Processando...';
+		document.getElementById('summaryInfo').textContent = files.length + ' arquivo(s)';
+		document.getElementById('uploadQueue').innerHTML = '';
+		document.getElementById('uploadProgress').style.display = 'none';
+
+		// Parse ID3 tags from all files
+		pendingFiles = [];
+		for (const f of files) {
+			const meta = await parseID3(f.file);
+			const fallbackTitle = f.file.name.replace(/\\.[^.]+$/, '').replace(/^\\d+[\\s._-]+/, '');
+			pendingFiles.push({
+				file: f.file,
+				folder: f.folder,
+				title: meta.title || fallbackTitle,
+				artist: meta.artist || 'Desconhecido',
+				album: meta.album || '',
+				cover: meta.cover,
+				duration: meta.duration || 0,
+			});
+		}
 
 		// Group by folder for preview
 		const grouped = {};
@@ -563,12 +689,15 @@ export function renderAdminPage(): string {
 
 		const totalSize = pendingFiles.reduce((sum, f) => sum + f.file.size, 0);
 		const sizeMB = (totalSize / (1024 * 1024)).toFixed(1);
+		const withCover = pendingFiles.filter(f => f.cover).length;
+		const withArtist = pendingFiles.filter(f => f.artist !== 'Desconhecido').length;
 
 		document.getElementById('summaryTitle').textContent = Object.keys(grouped).length > 1
 			? Object.keys(grouped).length + ' pastas encontradas'
 			: 'Pasta selecionada';
 		document.getElementById('summaryInfo').textContent =
-			pendingFiles.length + ' musica' + (pendingFiles.length !== 1 ? 's' : '') + ' - ' + sizeMB + ' MB total';
+			pendingFiles.length + ' musica' + (pendingFiles.length !== 1 ? 's' : '') + ' - ' + sizeMB + ' MB total'
+			+ ' | ' + withCover + ' com capa | ' + withArtist + ' com artista';
 
 		let previewHtml = '';
 		for (const [folder, items] of Object.entries(grouped)) {
@@ -578,8 +707,9 @@ export function renderAdminPage(): string {
 			previewHtml += folder + ' <span style="font-weight:400;color:#aaa;">(' + items.length + ')</span></div>';
 			for (const item of items) {
 				const sizeMB = (item.file.size / (1024 * 1024)).toFixed(1);
-				previewHtml += '<div style="display:flex;justify-content:space-between;padding:4px 0 4px 20px;font-size:13px;color:#666;border-bottom:1px solid #f5f5f5;">';
-				previewHtml += '<span>' + item.title + '</span>';
+				const coverIcon = item.cover ? '<span style="color:#22c55e;" title="Tem capa">&#9679;</span> ' : '<span style="color:#ddd;" title="Sem capa">&#9679;</span> ';
+				previewHtml += '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0 4px 20px;font-size:13px;color:#666;border-bottom:1px solid #f5f5f5;">';
+				previewHtml += '<span>' + coverIcon + '<strong>' + item.title + '</strong> - ' + item.artist + '</span>';
 				previewHtml += '<span style="color:#aaa;">' + sizeMB + ' MB</span>';
 				previewHtml += '</div>';
 			}
@@ -587,9 +717,6 @@ export function renderAdminPage(): string {
 		}
 
 		document.getElementById('folderPreview').innerHTML = previewHtml;
-		document.getElementById('uploadSummary').style.display = 'block';
-		document.getElementById('uploadQueue').innerHTML = '';
-		document.getElementById('uploadProgress').style.display = 'none';
 	}
 
 	// Concurrency limit for parallel uploads
@@ -667,8 +794,13 @@ export function renderAdminPage(): string {
 				formData.append('file', pending.file);
 				formData.append('playlist_id', playlistId);
 				formData.append('title', pending.title);
-				formData.append('artist', 'Desconhecido');
+				formData.append('artist', pending.artist || 'Desconhecido');
+				formData.append('album', pending.album || '');
+				formData.append('duration', String(pending.duration || 0));
 				formData.append('folder', pending.folder);
+				if (pending.cover) {
+					formData.append('cover', pending.cover, 'cover.jpg');
+				}
 
 				const res = await fetch('/api/songs/upload', { method: 'POST', body: formData });
 				if (res.ok) {

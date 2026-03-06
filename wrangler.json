@@ -16,6 +16,16 @@
 			"bucket_name": "payorbe-music"
 		}
 	],
+	"routes": [
+		{
+			"pattern": "patacos.com.br/*",
+			"zone_name": "patacos.com.br"
+		},
+		{
+			"pattern": "www.patacos.com.br/*",
+			"zone_name": "patacos.com.br"
+		}
+	],
 	"observability": {
 		"enabled": true
 	}
