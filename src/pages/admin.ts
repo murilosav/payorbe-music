@@ -487,7 +487,7 @@ export function renderAdminPage(): string {
 
 		try {
 			// Get all songs
-			const songsRes = await fetch('/api/playlists/' + slug + '/songs');
+			const songsRes = await fetchRetry('/api/playlists/' + slug + '/songs', {}, 3);
 			const songs = await songsRes.json();
 			if (songs.length === 0) { status.textContent = 'Nenhuma música encontrada.'; return; }
 
@@ -509,8 +509,8 @@ export function renderAdminPage(): string {
 				const folderSongs = grouped[folder];
 				const entries = [];
 
-				// Download each song and compute CRC (5 in parallel)
-				const PARALLEL_DL = 5;
+				// Download each song and compute CRC (8 in parallel)
+				const PARALLEL_DL = 8;
 				let dlIdx = 0;
 				async function dlWorker() {
 					while (dlIdx < folderSongs.length) {
@@ -524,7 +524,7 @@ export function renderAdminPage(): string {
 						const pct = Math.round(((totalDone + i) / songs.length) * 60);
 						bar.style.width = pct + '%';
 
-						const fileRes = await fetch('/api/songs/' + s.id + '/file');
+						const fileRes = await fetchRetry('/api/songs/' + s.id + '/file', {}, 3);
 						const blob = await fileRes.blob();
 						const crc = await fileCrc32(blob);
 
@@ -565,7 +565,7 @@ export function renderAdminPage(): string {
 						const zipName = (s.folder ? s.folder + '/' : '') + (s.artist || 'Desconhecido') + ' - ' + s.title + '.' + ext;
 						const nameBytes = new TextEncoder().encode(zipName);
 
-						const fileRes = await fetch('/api/songs/' + s.id + '/file');
+						const fileRes = await fetchRetry('/api/songs/' + s.id + '/file', {}, 3);
 						const blob = await fileRes.blob();
 						const crc = await fileCrc32(blob);
 
@@ -573,7 +573,7 @@ export function renderAdminPage(): string {
 					}
 				}
 				const workers = [];
-				for (let w = 0; w < Math.min(5, songs.length); w++) workers.push(dlAllWorker());
+				for (let w = 0; w < Math.min(3, songs.length); w++) workers.push(dlAllWorker());
 				await Promise.all(workers);
 
 				const zipBlob = buildZipBlob(allEntries.filter(Boolean));
@@ -1179,9 +1179,22 @@ export function renderAdminPage(): string {
 		return new Blob(blobParts, { type: 'application/zip' });
 	}
 
+	async function fetchRetry(url, opts, retries) {
+		retries = retries || 3;
+		for (let attempt = 0; attempt < retries; attempt++) {
+			const res = await fetch(url, opts);
+			if (res.ok) return res;
+			if (res.status >= 500 && attempt < retries - 1) {
+				await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+				continue;
+			}
+			throw new Error('HTTP ' + res.status + ' em ' + url);
+		}
+	}
+
 	async function uploadZipToR2(playlistId, folder, part, totalParts, blob, songCount, onProgress) {
-		const CHUNK = 50 * 1024 * 1024; // 50MB chunks
-		const PARALLEL = 6; // concurrent uploads
+		const CHUNK = 30 * 1024 * 1024; // 30MB chunks
+		const PARALLEL = 4;
 
 		if (blob.size < 90 * 1024 * 1024) {
 			// Simple upload
@@ -1191,16 +1204,16 @@ export function renderAdminPage(): string {
 			fd.append('part', String(part));
 			fd.append('totalParts', String(totalParts));
 			fd.append('songCount', String(songCount));
-			await fetch('/api/playlists/' + playlistId + '/zip/upload', { method: 'POST', body: fd });
+			await fetchRetry('/api/playlists/' + playlistId + '/zip/upload', { method: 'POST', body: fd }, 3);
 			if (onProgress) onProgress(1, 1);
 		} else {
-			// R2 multipart upload - parallel chunks
+			// R2 multipart upload
 			const r2Key = 'zips/playlist-' + playlistId + '/' + (folder || '_all') + '_part' + part + '.zip';
-			const startRes = await fetch('/api/playlists/' + playlistId + '/zip/start', {
+			const startRes = await fetchRetry('/api/playlists/' + playlistId + '/zip/start', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ key: r2Key })
-			});
+			}, 3);
 			const { uploadId } = await startRes.json();
 
 			const totalChunks = Math.ceil(blob.size / CHUNK);
@@ -1217,7 +1230,7 @@ export function renderAdminPage(): string {
 					fd.append('uploadId', uploadId);
 					fd.append('key', r2Key);
 					fd.append('partNumber', String(i + 1));
-					const res = await fetch('/api/playlists/' + playlistId + '/zip/part', { method: 'POST', body: fd });
+					const res = await fetchRetry('/api/playlists/' + playlistId + '/zip/part', { method: 'POST', body: fd }, 5);
 					const { etag } = await res.json();
 					parts[i] = { partNumber: i + 1, etag };
 					uploaded++;
@@ -1229,11 +1242,11 @@ export function renderAdminPage(): string {
 			for (let w = 0; w < Math.min(PARALLEL, totalChunks); w++) workers.push(uploadWorker());
 			await Promise.all(workers);
 
-			await fetch('/api/playlists/' + playlistId + '/zip/complete', {
+			await fetchRetry('/api/playlists/' + playlistId + '/zip/complete', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ uploadId, key: r2Key, parts: parts.filter(Boolean), folder, zipPart: part, totalParts, fileSize: blob.size, songCount })
-			});
+			}, 3);
 		}
 	}
 
@@ -1261,24 +1274,35 @@ export function renderAdminPage(): string {
 			const folderFiles = grouped[folder];
 			bannerText.textContent = 'Gerando ZIP' + (folder ? ' (' + folder + ')' : '') + '... Calculando checksums';
 
-			// Compute CRC32 for each file and prepare ZIP entries
-			const entries = [];
+			// Compute CRC32 for each file in parallel and prepare ZIP entries
+			const entries = new Array(folderFiles.length);
+			const CRC_PARALLEL = 10;
+			let crcIdx = 0;
+			let crcDone = 0;
 
-			for (let i = 0; i < folderFiles.length; i++) {
-				const f = folderFiles[i];
-				const ext = f.file.name.split('.').pop() || 'mp3';
-				const zipName = (f.artist || 'Desconhecido') + ' - ' + f.title + '.' + ext;
-				const nameBytes = new TextEncoder().encode(zipName);
-				const crc = await fileCrc32(f.file);
+			async function crcWorker() {
+				while (crcIdx < folderFiles.length) {
+					const i = crcIdx++;
+					const f = folderFiles[i];
+					const ext = f.file.name.split('.').pop() || 'mp3';
+					const zipName = (f.artist || 'Desconhecido') + ' - ' + f.title + '.' + ext;
+					const nameBytes = new TextEncoder().encode(zipName);
+					const crc = await fileCrc32(f.file);
 
-				entries.push({ nameBytes, crc, fileSize: f.file.size, file: f.file });
-				totalProcessed++;
+					entries[i] = { nameBytes, crc, fileSize: f.file.size, file: f.file };
+					crcDone++;
+					totalProcessed++;
 
-				const pct = Math.round((totalProcessed / totalFiles) * 70);
-				bannerPct.textContent = pct + '%';
-				bannerBar.style.width = pct + '%';
-				bannerText.textContent = 'Gerando ZIP' + (folder ? ' (' + folder + ')' : '') + '... ' + (i + 1) + '/' + folderFiles.length + ' checksums';
+					const pct = Math.round((totalProcessed / totalFiles) * 70);
+					bannerPct.textContent = pct + '%';
+					bannerBar.style.width = pct + '%';
+					bannerText.textContent = 'Gerando ZIP' + (folder ? ' (' + folder + ')' : '') + '... ' + crcDone + '/' + folderFiles.length + ' checksums';
+				}
 			}
+
+			const crcWorkers = [];
+			for (let w = 0; w < Math.min(CRC_PARALLEL, folderFiles.length); w++) crcWorkers.push(crcWorker());
+			await Promise.all(crcWorkers);
 
 			// Build and upload single ZIP
 			bannerText.textContent = 'Montando ZIP' + (folder ? ' (' + folder + ')' : '') + '...';
@@ -1296,18 +1320,29 @@ export function renderAdminPage(): string {
 
 		// Also generate "all songs" ZIP if multiple folders
 		if (folders.length > 1) {
-			bannerText.textContent = 'Gerando ZIP completo...';
-			const allEntries = [];
+			bannerText.textContent = 'Gerando ZIP completo... Calculando checksums';
+			const allEntries = new Array(files.length);
+			let allIdx = 0;
+			let allDone = 0;
 
-			for (const f of files) {
-				const ext = f.file.name.split('.').pop() || 'mp3';
-				const zipName = (f.folder ? f.folder + '/' : '') + (f.artist || 'Desconhecido') + ' - ' + f.title + '.' + ext;
-				const nameBytes = new TextEncoder().encode(zipName);
-				const crc = await fileCrc32(f.file);
-				allEntries.push({ nameBytes, crc, fileSize: f.file.size, file: f.file });
+			async function allCrcWorker() {
+				while (allIdx < files.length) {
+					const i = allIdx++;
+					const f = files[i];
+					const ext = f.file.name.split('.').pop() || 'mp3';
+					const zipName = (f.folder ? f.folder + '/' : '') + (f.artist || 'Desconhecido') + ' - ' + f.title + '.' + ext;
+					const nameBytes = new TextEncoder().encode(zipName);
+					const crc = await fileCrc32(f.file);
+					allEntries[i] = { nameBytes, crc, fileSize: f.file.size, file: f.file };
+					allDone++;
+					bannerText.textContent = 'ZIP completo: ' + allDone + '/' + files.length + ' checksums';
+				}
 			}
+			const allWorkers = [];
+			for (let w = 0; w < Math.min(10, files.length); w++) allWorkers.push(allCrcWorker());
+			await Promise.all(allWorkers);
 
-			const zipBlob = buildZipBlob(allEntries);
+			const zipBlob = buildZipBlob(allEntries.filter(Boolean));
 			const sizeMB = (zipBlob.size / (1024 * 1024)).toFixed(0);
 			bannerText.textContent = 'Enviando ZIP completo (' + sizeMB + ' MB)...';
 			await uploadZipToR2(playlistId, '', 1, 1, zipBlob, allEntries.length, function(done, total) {

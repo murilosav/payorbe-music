@@ -47,6 +47,12 @@ export async function handleLogin(request: Request, env: Env): Promise<Response>
 	}
 
 	if (request.method === "POST") {
+		// Cleanup expired sessions and old login attempts (opportunistic)
+		await Promise.all([
+			env.DB.prepare("DELETE FROM admin_sessions WHERE expires_at < datetime('now')").run(),
+			env.DB.prepare("DELETE FROM login_attempts WHERE attempted_at < datetime('now', '-1 hour')").run(),
+		]).catch(() => {});
+
 		// Rate limit: max 5 attempts per IP per 15 minutes
 		const ip = request.headers.get("CF-Connecting-IP") || "unknown";
 		const recentAttempts = await env.DB.prepare(
@@ -109,6 +115,10 @@ export async function handleLogout(request: Request, env: Env): Promise<Response
 			"Set-Cookie": "payorbe_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0",
 		},
 	});
+}
+
+function escapeHtml(s: string): string {
+	return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
 function renderLoginPage(error?: string): string {
@@ -184,7 +194,7 @@ function renderLoginPage(error?: string): string {
 	<div class="login-card">
 		<h1>PayOrbe Music</h1>
 		<p>Acesso administrativo</p>
-		${error ? `<div class="error">${error}</div>` : ""}
+		${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
 		<form method="POST" action="/admin/login">
 			<label>Senha</label>
 			<input type="password" name="password" placeholder="Digite a senha de admin" autofocus required>

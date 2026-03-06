@@ -24,8 +24,11 @@ export default {
 		const path = url.pathname;
 		const token = url.searchParams.get("token") || "";
 
+		const origin = request.headers.get("Origin") || "";
+		const allowedOrigins = ["https://patacos.com.br", "https://www.patacos.com.br"];
+		const corsOrigin = allowedOrigins.includes(origin) ? origin : allowedOrigins[0];
 		const corsHeaders = {
-			"Access-Control-Allow-Origin": "*",
+			"Access-Control-Allow-Origin": corsOrigin,
 			"Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
 			"Access-Control-Allow-Headers": "Content-Type, Authorization",
 		};
@@ -105,11 +108,12 @@ export default {
 
 				const ext = song.r2_key.split(".").pop() || "mp3";
 				const filename = `${song.artist} - ${song.title}.${ext}`;
+				const encodedFilename = encodeURIComponent(filename).replace(/%20/g, "+");
 
 				return new Response(object.body, {
 					headers: {
 						"Content-Type": "application/octet-stream",
-						"Content-Disposition": `attachment; filename="${encodeURIComponent(filename)}"`,
+						"Content-Disposition": `attachment; filename="${encodedFilename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
 					},
 				});
 			}
@@ -145,10 +149,11 @@ export default {
 				if (zip.total_parts > 1) zipName += ` (Parte ${zipPart} de ${zip.total_parts})`;
 				zipName += ".zip";
 
+				const encodedZipName = encodeURIComponent(zipName).replace(/%20/g, "+");
 				return new Response(object.body, {
 					headers: {
 						"Content-Type": "application/zip",
-						"Content-Disposition": `attachment; filename="${encodeURIComponent(zipName)}"`,
+						"Content-Disposition": `attachment; filename="${encodedZipName}"; filename*=UTF-8''${encodeURIComponent(zipName)}`,
 						"Content-Length": String(zip.file_size),
 					},
 				});
