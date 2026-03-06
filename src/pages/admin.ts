@@ -1024,8 +1024,10 @@ export function renderAdminPage(): string {
 		return new Blob(blobParts, { type: 'application/zip' });
 	}
 
-	async function uploadZipToR2(playlistId, folder, part, totalParts, blob, songCount) {
-		const CHUNK = 10 * 1024 * 1024; // 10MB
+	async function uploadZipToR2(playlistId, folder, part, totalParts, blob, songCount, onProgress) {
+		const CHUNK = 50 * 1024 * 1024; // 50MB chunks
+		const PARALLEL = 6; // concurrent uploads
+
 		if (blob.size < 90 * 1024 * 1024) {
 			// Simple upload
 			const fd = new FormData();
@@ -1035,8 +1037,9 @@ export function renderAdminPage(): string {
 			fd.append('totalParts', String(totalParts));
 			fd.append('songCount', String(songCount));
 			await fetch('/api/playlists/' + playlistId + '/zip/upload', { method: 'POST', body: fd });
+			if (onProgress) onProgress(1, 1);
 		} else {
-			// R2 multipart upload
+			// R2 multipart upload - parallel chunks
 			const r2Key = 'zips/playlist-' + playlistId + '/' + (folder || '_all') + '_part' + part + '.zip';
 			const startRes = await fetch('/api/playlists/' + playlistId + '/zip/start', {
 				method: 'POST',
@@ -1045,24 +1048,36 @@ export function renderAdminPage(): string {
 			});
 			const { uploadId } = await startRes.json();
 
-			const parts = [];
 			const totalChunks = Math.ceil(blob.size / CHUNK);
-			for (let i = 0; i < totalChunks; i++) {
-				const chunk = blob.slice(i * CHUNK, Math.min((i + 1) * CHUNK, blob.size));
-				const fd = new FormData();
-				fd.append('chunk', chunk);
-				fd.append('uploadId', uploadId);
-				fd.append('key', r2Key);
-				fd.append('partNumber', String(i + 1));
-				const res = await fetch('/api/playlists/' + playlistId + '/zip/part', { method: 'POST', body: fd });
-				const { etag } = await res.json();
-				parts.push({ partNumber: i + 1, etag });
+			const parts = new Array(totalChunks);
+			let uploaded = 0;
+
+			let nextIdx = 0;
+			async function uploadWorker() {
+				while (nextIdx < totalChunks) {
+					const i = nextIdx++;
+					const chunk = blob.slice(i * CHUNK, Math.min((i + 1) * CHUNK, blob.size));
+					const fd = new FormData();
+					fd.append('chunk', chunk);
+					fd.append('uploadId', uploadId);
+					fd.append('key', r2Key);
+					fd.append('partNumber', String(i + 1));
+					const res = await fetch('/api/playlists/' + playlistId + '/zip/part', { method: 'POST', body: fd });
+					const { etag } = await res.json();
+					parts[i] = { partNumber: i + 1, etag };
+					uploaded++;
+					if (onProgress) onProgress(uploaded, totalChunks);
+				}
 			}
+
+			const workers = [];
+			for (let w = 0; w < Math.min(PARALLEL, totalChunks); w++) workers.push(uploadWorker());
+			await Promise.all(workers);
 
 			await fetch('/api/playlists/' + playlistId + '/zip/complete', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ uploadId, key: r2Key, parts, folder, zipPart: part, totalParts, fileSize: blob.size, songCount })
+				body: JSON.stringify({ uploadId, key: r2Key, parts: parts.filter(Boolean), folder, zipPart: part, totalParts, fileSize: blob.size, songCount })
 			});
 		}
 	}
@@ -1092,11 +1107,7 @@ export function renderAdminPage(): string {
 			bannerText.textContent = 'Gerando ZIP' + (folder ? ' (' + folder + ')' : '') + '... Calculando checksums';
 
 			// Compute CRC32 for each file and prepare ZIP entries
-			const MAX_PART_SIZE = 2 * 1024 * 1024 * 1024; // 2GB per part
-			let currentEntries = [];
-			let currentSize = 0;
-			let partNum = 1;
-			const allParts = [];
+			const entries = [];
 
 			for (let i = 0; i < folderFiles.length; i++) {
 				const f = folderFiles[i];
@@ -1104,75 +1115,49 @@ export function renderAdminPage(): string {
 				const zipName = (f.artist || 'Desconhecido') + ' - ' + f.title + '.' + ext;
 				const nameBytes = new TextEncoder().encode(zipName);
 				const crc = await fileCrc32(f.file);
-				const entrySize = 30 + nameBytes.length + f.file.size + 46 + nameBytes.length;
 
-				// Split at 2GB boundary
-				if (currentSize + entrySize > MAX_PART_SIZE && currentEntries.length > 0) {
-					allParts.push([...currentEntries]);
-					currentEntries = [];
-					currentSize = 0;
-					partNum++;
-				}
-
-				currentEntries.push({ nameBytes, crc, fileSize: f.file.size, file: f.file });
-				currentSize += entrySize;
+				entries.push({ nameBytes, crc, fileSize: f.file.size, file: f.file });
 				totalProcessed++;
 
-				const pct = Math.round((totalProcessed / totalFiles) * 70); // 0-70% for CRC
+				const pct = Math.round((totalProcessed / totalFiles) * 70);
 				bannerPct.textContent = pct + '%';
 				bannerBar.style.width = pct + '%';
 				bannerText.textContent = 'Gerando ZIP' + (folder ? ' (' + folder + ')' : '') + '... ' + (i + 1) + '/' + folderFiles.length + ' checksums';
 			}
-			if (currentEntries.length > 0) allParts.push(currentEntries);
 
-			// Build and upload each part
-			const totalParts = allParts.length;
-			for (let p = 0; p < totalParts; p++) {
-				bannerText.textContent = 'Montando ZIP' + (folder ? ' (' + folder + ')' : '') + (totalParts > 1 ? ' parte ' + (p + 1) + '/' + totalParts : '') + '...';
-				const zipBlob = buildZipBlob(allParts[p]);
+			// Build and upload single ZIP
+			bannerText.textContent = 'Montando ZIP' + (folder ? ' (' + folder + ')' : '') + '...';
+			const zipBlob = buildZipBlob(entries);
+			const sizeMB = (zipBlob.size / (1024 * 1024)).toFixed(0);
 
-				const uploadPct = 70 + Math.round(((p + 0.5) / totalParts) * 30);
-				bannerPct.textContent = uploadPct + '%';
-				bannerBar.style.width = uploadPct + '%';
-
-				bannerText.textContent = 'Enviando ZIP' + (folder ? ' (' + folder + ')' : '') + (totalParts > 1 ? ' parte ' + (p + 1) + '/' + totalParts : '') + ' (' + (zipBlob.size / (1024 * 1024)).toFixed(0) + ' MB)...';
-				await uploadZipToR2(playlistId, folder, p + 1, totalParts, zipBlob, allParts[p].length);
-			}
+			bannerText.textContent = 'Enviando ZIP' + (folder ? ' (' + folder + ')' : '') + ' (' + sizeMB + ' MB)...';
+			await uploadZipToR2(playlistId, folder, 1, 1, zipBlob, entries.length, function(done, total) {
+				const pct = 70 + Math.round((done / total) * 30);
+				bannerPct.textContent = pct + '%';
+				bannerBar.style.width = pct + '%';
+				bannerText.textContent = 'Enviando ZIP' + (folder ? ' (' + folder + ')' : '') + ' ' + Math.round((done / total) * 100) + '% (' + sizeMB + ' MB)';
+			});
 		}
 
 		// Also generate "all songs" ZIP if multiple folders
 		if (folders.length > 1) {
 			bannerText.textContent = 'Gerando ZIP completo...';
 			const allEntries = [];
-			let allSize = 0;
-			let partNum = 1;
-			const allParts = [];
-			const MAX_PART_SIZE = 2 * 1024 * 1024 * 1024;
 
 			for (const f of files) {
 				const ext = f.file.name.split('.').pop() || 'mp3';
 				const zipName = (f.folder ? f.folder + '/' : '') + (f.artist || 'Desconhecido') + ' - ' + f.title + '.' + ext;
 				const nameBytes = new TextEncoder().encode(zipName);
-				// Reuse CRC from folder pass would be ideal but we need to recompute
 				const crc = await fileCrc32(f.file);
-				const entrySize = 30 + nameBytes.length + f.file.size + 46 + nameBytes.length;
-
-				if (allSize + entrySize > MAX_PART_SIZE && allEntries.length > 0) {
-					allParts.push([...allEntries]);
-					allEntries.length = 0;
-					allSize = 0;
-				}
-
 				allEntries.push({ nameBytes, crc, fileSize: f.file.size, file: f.file });
-				allSize += entrySize;
 			}
-			if (allEntries.length > 0) allParts.push(allEntries);
 
-			for (let p = 0; p < allParts.length; p++) {
-				bannerText.textContent = 'Enviando ZIP completo' + (allParts.length > 1 ? ' parte ' + (p + 1) + '/' + allParts.length : '') + '...';
-				const zipBlob = buildZipBlob(allParts[p]);
-				await uploadZipToR2(playlistId, '', p + 1, allParts.length, zipBlob, allParts[p].length);
-			}
+			const zipBlob = buildZipBlob(allEntries);
+			const sizeMB = (zipBlob.size / (1024 * 1024)).toFixed(0);
+			bannerText.textContent = 'Enviando ZIP completo (' + sizeMB + ' MB)...';
+			await uploadZipToR2(playlistId, '', 1, 1, zipBlob, allEntries.length, function(done, total) {
+				bannerText.textContent = 'Enviando ZIP completo ' + Math.round((done / total) * 100) + '% (' + sizeMB + ' MB)';
+			});
 		}
 
 		// Done
