@@ -372,9 +372,22 @@ export function renderAdminPage(): string {
 			container.innerHTML = '<p style="color:#888;font-size:14px;padding:16px;">Nenhuma playlist criada.</p>';
 			return;
 		}
-		container.innerHTML = data.map(p => {
+
+		// Fetch ZIP status for all playlists in parallel
+		const zipStatuses = await Promise.all(data.map(p =>
+			fetch('/api/playlists/' + p.id + '/zips').then(r => r.json()).catch(() => [])
+		));
+
+		container.innerHTML = data.map((p, idx) => {
 			const fullLink = location.origin + '/' + p.slug + '?token=' + (p.access_token || '');
 			const hasCover = p.cover_r2_key ? true : false;
+			const zips = zipStatuses[idx] || [];
+			const hasZip = zips.length > 0;
+			const totalZipSize = zips.reduce((s, z) => s + (z.file_size || 0), 0);
+			const zipSizeMB = (totalZipSize / (1024 * 1024)).toFixed(0);
+			const zipLabel = hasZip ? 'ZIP pronto (' + zipSizeMB + ' MB)' : 'ZIP não gerado';
+			const zipColor = hasZip ? '#22c55e' : '#e67e22';
+
 			return \`
 			<div class="playlist-item" style="flex-direction:column;align-items:stretch;gap:8px;">
 				<div style="display:flex;justify-content:space-between;align-items:center;">
@@ -387,10 +400,14 @@ export function renderAdminPage(): string {
 						<input type="file" id="cover-input-\${p.id}" accept="image/*" style="display:none;" onchange="uploadPlaylistCover(\${p.id}, this.files[0])">
 						<div>
 							<div class="playlist-item-name">\${p.name}</div>
-							<span style="font-size:11px;color:\${hasCover ? '#22c55e' : '#aaa'};">\${hasCover ? 'Capa definida' : 'Sem capa'}</span>
+							<div style="display:flex;gap:12px;align-items:center;">
+								<span style="font-size:11px;color:\${hasCover ? '#22c55e' : '#aaa'};">\${hasCover ? 'Capa definida' : 'Sem capa'}</span>
+								<span style="font-size:11px;color:\${zipColor};">\${zipLabel}</span>
+							</div>
 						</div>
 					</div>
 					<div class="playlist-item-actions">
+						<button class="btn btn-sm" style="background:\${hasZip ? '#f0f0f0' : '#e67e22'};color:\${hasZip ? '#333' : '#fff'};" onclick="regenerateZip(\${p.id}, '\${p.slug}')" id="zip-btn-\${p.id}">\${hasZip ? 'Regerar ZIP' : 'Gerar ZIP'}</button>
 						<button class="btn btn-sm" style="background:#f0f0f0;color:#333;" onclick="copyLink('\${fullLink}')">Copiar Link</button>
 						<a href="\${fullLink}" target="_blank" class="btn btn-sm" style="background:#f0f0f0;color:#333;text-decoration:none;">Abrir</a>
 						<button class="btn btn-danger btn-sm" onclick="deletePlaylist(\${p.id}, '\${p.name}')">Excluir</button>
@@ -398,6 +415,13 @@ export function renderAdminPage(): string {
 				</div>
 				<div style="display:flex;align-items:center;gap:6px;">
 					<input type="text" value="\${fullLink}" readonly onclick="this.select()" style="flex:1;font-size:11px;padding:6px 10px;background:#f8f8f8;border:1px solid #eee;border-radius:6px;color:#666;cursor:text;">
+				</div>
+				<div id="zip-progress-\${p.id}" style="display:none;font-size:12px;color:#666;padding:4px 0;">
+					<div style="display:flex;align-items:center;gap:8px;">
+						<div class="spinner" style="width:14px;height:14px;border-width:2px;border-color:rgba(0,0,0,0.1);border-top-color:#1a1a1a;"></div>
+						<span id="zip-status-\${p.id}">Preparando...</span>
+					</div>
+					<div class="progress-bar" style="height:4px;margin-top:6px;"><div class="progress-fill" id="zip-bar-\${p.id}" style="width:0%"></div></div>
 				</div>
 			</div>\`;
 		}).join('');
@@ -448,6 +472,126 @@ export function renderAdminPage(): string {
 		} else {
 			alert('Erro ao enviar capa.');
 		}
+	}
+
+	async function regenerateZip(playlistId, slug) {
+		const btn = document.getElementById('zip-btn-' + playlistId);
+		const progress = document.getElementById('zip-progress-' + playlistId);
+		const status = document.getElementById('zip-status-' + playlistId);
+		const bar = document.getElementById('zip-bar-' + playlistId);
+
+		btn.disabled = true;
+		btn.textContent = 'Gerando...';
+		progress.style.display = 'block';
+		status.textContent = 'Buscando lista de músicas...';
+
+		try {
+			// Get all songs
+			const songsRes = await fetch('/api/playlists/' + slug + '/songs');
+			const songs = await songsRes.json();
+			if (songs.length === 0) { status.textContent = 'Nenhuma música encontrada.'; return; }
+
+			// Delete old ZIPs
+			await fetch('/api/playlists/' + playlistId + '/zips', { method: 'DELETE' });
+
+			// Group by folder
+			const grouped = {};
+			for (const s of songs) {
+				const f = s.folder || '';
+				if (!grouped[f]) grouped[f] = [];
+				grouped[f].push(s);
+			}
+
+			const folders = Object.keys(grouped);
+			let totalDone = 0;
+
+			for (const folder of folders) {
+				const folderSongs = grouped[folder];
+				const entries = [];
+
+				// Download each song and compute CRC (5 in parallel)
+				const PARALLEL_DL = 5;
+				let dlIdx = 0;
+				async function dlWorker() {
+					while (dlIdx < folderSongs.length) {
+						const i = dlIdx++;
+						const s = folderSongs[i];
+						const ext = (s.r2_key || '').split('.').pop() || 'mp3';
+						const zipName = (s.artist || 'Desconhecido') + ' - ' + s.title + '.' + ext;
+						const nameBytes = new TextEncoder().encode(zipName);
+
+						status.textContent = 'Baixando' + (folder ? ' (' + folder + ')' : '') + '... ' + (i + 1) + '/' + folderSongs.length;
+						const pct = Math.round(((totalDone + i) / songs.length) * 60);
+						bar.style.width = pct + '%';
+
+						const fileRes = await fetch('/api/songs/' + s.id + '/file');
+						const blob = await fileRes.blob();
+						const crc = await fileCrc32(blob);
+
+						entries.push({ nameBytes, crc, fileSize: blob.size, file: blob });
+					}
+				}
+
+				const workers = [];
+				for (let w = 0; w < Math.min(PARALLEL_DL, folderSongs.length); w++) workers.push(dlWorker());
+				await Promise.all(workers);
+				totalDone += folderSongs.length;
+
+				// Build ZIP
+				status.textContent = 'Montando ZIP' + (folder ? ' (' + folder + ')' : '') + '...';
+				bar.style.width = '70%';
+				const zipBlob = buildZipBlob(entries);
+
+				// Upload ZIP
+				const sizeMB = (zipBlob.size / (1024 * 1024)).toFixed(0);
+				status.textContent = 'Enviando ZIP' + (folder ? ' (' + folder + ')' : '') + ' (' + sizeMB + ' MB)...';
+				await uploadZipToR2(playlistId, folder, 1, 1, zipBlob, entries.length, function(done, total) {
+					const pct = 70 + Math.round((done / total) * 30);
+					bar.style.width = pct + '%';
+					status.textContent = 'Enviando ZIP' + (folder ? ' (' + folder + ')' : '') + ' ' + Math.round((done / total) * 100) + '% (' + sizeMB + ' MB)';
+				});
+			}
+
+			// Also generate "all" ZIP if multiple folders
+			if (folders.length > 1) {
+				status.textContent = 'Gerando ZIP completo...';
+				const allEntries = [];
+				let dlIdx = 0;
+				async function dlAllWorker() {
+					while (dlIdx < songs.length) {
+						const i = dlIdx++;
+						const s = songs[i];
+						const ext = (s.r2_key || '').split('.').pop() || 'mp3';
+						const zipName = (s.folder ? s.folder + '/' : '') + (s.artist || 'Desconhecido') + ' - ' + s.title + '.' + ext;
+						const nameBytes = new TextEncoder().encode(zipName);
+
+						const fileRes = await fetch('/api/songs/' + s.id + '/file');
+						const blob = await fileRes.blob();
+						const crc = await fileCrc32(blob);
+
+						allEntries[i] = { nameBytes, crc, fileSize: blob.size, file: blob };
+					}
+				}
+				const workers = [];
+				for (let w = 0; w < Math.min(5, songs.length); w++) workers.push(dlAllWorker());
+				await Promise.all(workers);
+
+				const zipBlob = buildZipBlob(allEntries.filter(Boolean));
+				const sizeMB = (zipBlob.size / (1024 * 1024)).toFixed(0);
+				status.textContent = 'Enviando ZIP completo (' + sizeMB + ' MB)...';
+				await uploadZipToR2(playlistId, '', 1, 1, zipBlob, allEntries.length, function(done, total) {
+					status.textContent = 'Enviando ZIP completo ' + Math.round((done / total) * 100) + '% (' + sizeMB + ' MB)';
+				});
+			}
+
+			status.textContent = 'ZIP gerado com sucesso!';
+			bar.style.width = '100%';
+			setTimeout(() => { progress.style.display = 'none'; loadPlaylists(); }, 2000);
+		} catch (err) {
+			status.textContent = 'Erro: ' + err.message;
+			status.style.color = '#ef4444';
+		}
+		btn.disabled = false;
 	}
 
 	async function deletePlaylist(id, name) {

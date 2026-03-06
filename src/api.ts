@@ -239,6 +239,25 @@ export async function handleApi(request: Request, env: Env, path: string): Promi
 		return json(results);
 	}
 
+	// GET /api/songs/:id/file - Download song file (admin only, for ZIP generation)
+	const songFileMatch = path.match(/^\/api\/songs\/(\d+)\/file$/);
+	if (songFileMatch && request.method === "GET") {
+		const songId = parseInt(songFileMatch[1]);
+		const song = await env.DB.prepare("SELECT r2_key FROM songs WHERE id = ?")
+			.bind(songId).first<{ r2_key: string }>();
+		if (!song) return new Response(null, { status: 404 });
+
+		const object = await env.MUSIC_BUCKET.get(song.r2_key);
+		if (!object) return new Response(null, { status: 404 });
+
+		return new Response(object.body, {
+			headers: {
+				"Content-Type": object.httpMetadata?.contentType || "application/octet-stream",
+				"Cache-Control": "private, no-store",
+			},
+		});
+	}
+
 	// POST /api/songs/upload - Upload a song file (with optional cover)
 	if (path === "/api/songs/upload" && request.method === "POST") {
 		const formData = await request.formData();
