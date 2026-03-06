@@ -10,6 +10,12 @@
 			"database_name": "d1-music-database"
 		}
 	],
+	"r2_buckets": [
+		{
+			"binding": "MUSIC_BUCKET",
+			"bucket_name": "payorbe-music"
+		}
+	],
 	"observability": {
 		"enabled": true
 	}
