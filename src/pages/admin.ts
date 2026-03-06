@@ -1327,10 +1327,17 @@ export function renderAdminPage(): string {
 		var textBytes = data.slice(1);
 		if (enc === 1 || enc === 2) {
 			var arr = [];
-			var hasBom = textBytes[0] === 0xFF && textBytes[1] === 0xFE;
-			var start = hasBom ? 2 : 0;
+			var bigEndian = enc === 2; // enc 2 = UTF-16BE (no BOM)
+			var start = 0;
+			// Check BOM for enc 1
+			if (enc === 1 && textBytes.length >= 2) {
+				if (textBytes[0] === 0xFE && textBytes[1] === 0xFF) { bigEndian = true; start = 2; }
+				else if (textBytes[0] === 0xFF && textBytes[1] === 0xFE) { bigEndian = false; start = 2; }
+			}
 			for (var i = start; i < textBytes.length - 1; i += 2) {
-				var code = textBytes[i] | (textBytes[i+1] << 8);
+				var code = bigEndian
+					? (textBytes[i] << 8) | textBytes[i+1]
+					: textBytes[i] | (textBytes[i+1] << 8);
 				if (code === 0) break;
 				arr.push(code);
 			}
@@ -1583,8 +1590,10 @@ export function renderAdminPage(): string {
 						item.querySelector('.file-status').style.color = '#d97706';
 						success = true;
 					} else {
-						var err = await res.json();
-						throw new Error(err.error);
+						var errText = await res.text();
+						var errMsg = 'Erro ' + res.status;
+						try { errMsg = JSON.parse(errText).error || errMsg; } catch(e) {}
+						throw new Error(errMsg);
 					}
 				} catch (err) {
 					if (attempt === 2) {
