@@ -1,6 +1,6 @@
 export function renderHomePage(playlists: any[]): string {
 	const playlistCards = playlists.map(p => `
-		<a href="/${esc(p.slug)}" class="playlist-card">
+		<a href="/${esc(p.slug)}?token=${esc(p.access_token || "")}" class="playlist-card">
 			<div class="playlist-card-cover">
 				${p.cover_url
 					? `<img src="${esc(p.cover_url)}" alt="${esc(p.name)}">`

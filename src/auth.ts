@@ -47,15 +47,33 @@ export async function handleLogin(request: Request, env: Env): Promise<Response>
 	}
 
 	if (request.method === "POST") {
+		// Rate limit: max 5 attempts per IP per 15 minutes
+		const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+		const recentAttempts = await env.DB.prepare(
+			"SELECT COUNT(*) as cnt FROM login_attempts WHERE ip = ? AND attempted_at > datetime('now', '-15 minutes')"
+		).bind(ip).first<{ cnt: number }>();
+
+		if (recentAttempts && recentAttempts.cnt >= 5) {
+			return new Response(renderLoginPage("Muitas tentativas. Aguarde 15 minutos."), {
+				status: 429,
+				headers: { "content-type": "text/html; charset=utf-8" },
+			});
+		}
+
 		const formData = await request.formData();
 		const password = formData.get("password") as string;
 
 		if (!password || password !== env.ADMIN_KEY) {
+			// Log failed attempt
+			await env.DB.prepare("INSERT INTO login_attempts (ip) VALUES (?)").bind(ip).run();
 			return new Response(renderLoginPage("Senha incorreta."), {
 				status: 401,
 				headers: { "content-type": "text/html; charset=utf-8" },
 			});
 		}
+
+		// Clean up old attempts on successful login
+		await env.DB.prepare("DELETE FROM login_attempts WHERE ip = ?").bind(ip).run();
 
 		const token = await generateToken(env.ADMIN_KEY);
 		const expiresAt = new Date(Date.now() + SESSION_DURATION * 1000).toISOString();

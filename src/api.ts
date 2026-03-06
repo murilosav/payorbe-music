@@ -20,9 +20,14 @@ export async function handleApi(request: Request, env: Env, path: string): Promi
 		if (!body.name || !body.slug) return json({ error: "name and slug required" }, 400);
 
 		const slug = body.slug.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+		// Generate secure random access token
+		const tokenBytes = new Uint8Array(32);
+		crypto.getRandomValues(tokenBytes);
+		const accessToken = Array.from(tokenBytes).map(b => b.toString(16).padStart(2, "0")).join("");
+
 		await env.DB.prepare(
-			"INSERT INTO playlists (name, slug, description, cover_url) VALUES (?, ?, ?, ?)"
-		).bind(body.name, slug, body.description || "", body.cover_url || "").run();
+			"INSERT INTO playlists (name, slug, description, cover_url, access_token) VALUES (?, ?, ?, ?, ?)"
+		).bind(body.name, slug, body.description || "", body.cover_url || "", accessToken).run();
 
 		const playlist = await env.DB.prepare("SELECT * FROM playlists WHERE slug = ?").bind(slug).first();
 		return json(playlist, 201);

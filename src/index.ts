@@ -10,10 +10,22 @@ export interface Env {
 	ADMIN_KEY?: string;
 }
 
+// Verify that a song belongs to a playlist with the given access token
+async function verifySongAccess(env: Env, songId: number, token: string): Promise<{ r2_key: string; title: string; artist: string; cover_r2_key: string } | null> {
+	const song = await env.DB.prepare(
+		`SELECT s.r2_key, s.title, s.artist, s.cover_r2_key
+		 FROM songs s
+		 JOIN playlists p ON s.playlist_id = p.id
+		 WHERE s.id = ? AND p.access_token = ?`
+	).bind(songId, token).first<{ r2_key: string; title: string; artist: string; cover_r2_key: string }>();
+	return song || null;
+}
+
 export default {
 	async fetch(request: Request, env: Env): Promise<Response> {
 		const url = new URL(request.url);
 		const path = url.pathname;
+		const token = url.searchParams.get("token") || "";
 
 		// CORS headers
 		const corsHeaders = {
@@ -35,7 +47,7 @@ export default {
 				return handleLogout(request, env);
 			}
 
-			// Protected: API routes
+			// Protected: API routes (admin only)
 			if (path.startsWith("/api/")) {
 				const isAuthed = await verifyAuth(request, env);
 				if (!isAuthed) {
@@ -50,23 +62,22 @@ export default {
 				return new Response(response.body, { status: response.status, headers: newHeaders });
 			}
 
-			// Stream a song
+			// Stream a song (requires valid playlist token)
 			if (path.startsWith("/stream/")) {
 				const songId = parseInt(path.split("/")[2]);
-				if (isNaN(songId)) return new Response("Invalid ID", { status: 400 });
+				if (isNaN(songId) || !token) return new Response("Access denied", { status: 403 });
 
-				const song = await env.DB.prepare("SELECT r2_key, title FROM songs WHERE id = ?").bind(songId).first<{ r2_key: string; title: string }>();
-				if (!song) return new Response("Song not found", { status: 404 });
+				const song = await verifySongAccess(env, songId, token);
+				if (!song) return new Response("Access denied", { status: 403 });
 
 				const object = await env.MUSIC_BUCKET.get(song.r2_key);
-				if (!object) return new Response("File not found in storage", { status: 404 });
+				if (!object) return new Response("File not found", { status: 404 });
 
 				const headers = new Headers();
 				headers.set("Content-Type", object.httpMetadata?.contentType || "audio/mpeg");
 				headers.set("Accept-Ranges", "bytes");
-				headers.set("Cache-Control", "public, max-age=31536000");
+				headers.set("Cache-Control", "private, max-age=3600");
 
-				// Handle range requests for seeking
 				const range = request.headers.get("Range");
 				if (range && object.size) {
 					const match = range.match(/bytes=(\d+)-(\d*)/);
@@ -87,16 +98,16 @@ export default {
 				return new Response(object.body, { headers });
 			}
 
-			// Download a song
+			// Download a song (requires valid playlist token)
 			if (path.startsWith("/download/")) {
 				const songId = parseInt(path.split("/")[2]);
-				if (isNaN(songId)) return new Response("Invalid ID", { status: 400 });
+				if (isNaN(songId) || !token) return new Response("Access denied", { status: 403 });
 
-				const song = await env.DB.prepare("SELECT r2_key, title, artist FROM songs WHERE id = ?").bind(songId).first<{ r2_key: string; title: string; artist: string }>();
-				if (!song) return new Response("Song not found", { status: 404 });
+				const song = await verifySongAccess(env, songId, token);
+				if (!song) return new Response("Access denied", { status: 403 });
 
 				const object = await env.MUSIC_BUCKET.get(song.r2_key);
-				if (!object) return new Response("File not found in storage", { status: 404 });
+				if (!object) return new Response("File not found", { status: 404 });
 
 				const ext = song.r2_key.split(".").pop() || "mp3";
 				const filename = `${song.artist} - ${song.title}.${ext}`;
@@ -109,15 +120,13 @@ export default {
 				});
 			}
 
-			// Song cover image
+			// Song cover image (requires valid playlist token)
 			if (path.startsWith("/cover/")) {
 				const songId = parseInt(path.split("/")[2]);
-				if (isNaN(songId)) return new Response("Invalid ID", { status: 400 });
+				if (isNaN(songId) || !token) return new Response("Access denied", { status: 403 });
 
-				const song = await env.DB.prepare("SELECT cover_r2_key FROM songs WHERE id = ?").bind(songId).first<{ cover_r2_key: string }>();
-				if (!song || !song.cover_r2_key) {
-					return new Response(null, { status: 404 });
-				}
+				const song = await verifySongAccess(env, songId, token);
+				if (!song || !song.cover_r2_key) return new Response(null, { status: 404 });
 
 				const object = await env.MUSIC_BUCKET.get(song.cover_r2_key);
 				if (!object) return new Response(null, { status: 404 });
@@ -125,7 +134,7 @@ export default {
 				return new Response(object.body, {
 					headers: {
 						"Content-Type": object.httpMetadata?.contentType || "image/jpeg",
-						"Cache-Control": "public, max-age=31536000",
+						"Cache-Control": "private, max-age=86400",
 					},
 				});
 			}
@@ -144,25 +153,38 @@ export default {
 				});
 			}
 
-			// Home page
+			// Home page (only for admin - redirects to login)
 			if (path === "/") {
+				const isAuthed = await verifyAuth(request, env);
+				if (!isAuthed) {
+					return new Response(null, {
+						status: 302,
+						headers: { "Location": "/admin/login" },
+					});
+				}
 				const playlists = await env.DB.prepare("SELECT * FROM playlists ORDER BY created_at DESC").all();
 				return new Response(renderHomePage(playlists.results), {
 					headers: { "content-type": "text/html; charset=utf-8" },
 				});
 			}
 
-			// Playlist page (/:slug)
-			const slug = path.slice(1).split("/")[0];
+			// Playlist page: /:slug?token=xxxxx
+			const slugParts = path.slice(1).split("/");
+			const slug = slugParts[0];
 			if (slug) {
-				const playlist = await env.DB.prepare("SELECT * FROM playlists WHERE slug = ?").bind(slug).first();
-				if (!playlist) return new Response("Playlist not found", { status: 404 });
+				const playlist = await env.DB.prepare("SELECT * FROM playlists WHERE slug = ? AND access_token = ?").bind(slug, token).first();
+				if (!playlist) {
+					return new Response(renderAccessDenied(), {
+						status: 403,
+						headers: { "content-type": "text/html; charset=utf-8" },
+					});
+				}
 
 				const songs = await env.DB.prepare(
 					"SELECT * FROM songs WHERE playlist_id = ? ORDER BY folder, track_number, title"
 				).bind(playlist.id).all();
 
-				return new Response(renderPlaylistPage(playlist, songs.results), {
+				return new Response(renderPlaylistPage(playlist, songs.results, token), {
 					headers: { "content-type": "text/html; charset=utf-8" },
 				});
 			}
@@ -177,3 +199,28 @@ export default {
 		}
 	},
 } satisfies ExportedHandler<Env>;
+
+function renderAccessDenied(): string {
+	return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Acesso Negado - Patacos</title>
+	<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+	<style>
+	* { margin: 0; padding: 0; box-sizing: border-box; }
+	body { font-family: 'Inter', sans-serif; background: #fafafa; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+	.card { text-align: center; padding: 48px; }
+	h1 { font-size: 20px; margin-bottom: 8px; color: #1a1a1a; }
+	p { font-size: 14px; color: #888; }
+	</style>
+</head>
+<body>
+	<div class="card">
+		<h1>Acesso Negado</h1>
+		<p>Este link e invalido ou expirou. Entre em contato com o vendedor.</p>
+	</div>
+</body>
+</html>`;
+}

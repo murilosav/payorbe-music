@@ -1,4 +1,4 @@
-export function renderPlaylistPage(playlist: any, songs: any[]): string {
+export function renderPlaylistPage(playlist: any, songs: any[], accessToken: string): string {
 	// Group songs by folder
 	const folders = new Map<string, any[]>();
 	for (const song of songs) {
@@ -35,7 +35,7 @@ export function renderPlaylistPage(playlist: any, songs: any[]): string {
 							</label>
 							<div class="song-cover" onclick="playSong(${song.id})">
 								${song.cover_r2_key
-									? `<img src="/cover/${song.id}" alt="${esc(song.title)}" loading="lazy">`
+									? `<img src="/cover/${song.id}?token=${accessToken}" alt="${esc(song.title)}" loading="lazy">`
 									: `<div class="cover-placeholder">
 										<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"></circle><path d="M9 12l2 2 4-4"></path><path d="M9.5 9.5L15 15M14.5 9.5L9 15" stroke="none"></path><circle cx="12" cy="12" r="3" fill="currentColor" opacity="0.2"></circle><path d="M10 8.5v7l5.5-3.5z" fill="currentColor" opacity="0.6"></path></svg>
 									</div>`
@@ -174,6 +174,7 @@ export function renderPlaylistPage(playlist: any, songs: any[]): string {
 
 	<script>
 	const PREVIEW_LIMIT = 30; // seconds
+	const ACCESS_TOKEN = '${accessToken}';
 	const allSongs = ${JSON.stringify(songs.map(s => ({ id: s.id, title: s.title, artist: s.artist, album: s.album, duration: s.duration, folder: s.folder, cover_r2_key: s.cover_r2_key })))};
 	let currentIndex = -1;
 	let isPlaying = false;
@@ -202,7 +203,7 @@ export function renderPlaylistPage(playlist: any, songs: any[]): string {
 		const song = playQueue[currentIndex];
 		if (!song) return;
 
-		audio.src = '/stream/' + song.id;
+		audio.src = '/stream/' + song.id + '?token=' + ACCESS_TOKEN;
 		audio.play();
 		isPlaying = true;
 		previewNotice.style.display = 'none';
@@ -216,7 +217,7 @@ export function renderPlaylistPage(playlist: any, songs: any[]): string {
 		pauseIcon.style.display = 'block';
 
 		if (song.cover_r2_key) {
-			playerCover.innerHTML = '<img src="/cover/' + song.id + '" alt="">';
+			playerCover.innerHTML = '<img src="/cover/' + song.id + '?token=' + ACCESS_TOKEN + '" alt="">';
 		} else {
 			playerCover.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#999" stroke-width="1.5"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="3"></circle></svg>';
 		}
@@ -323,7 +324,7 @@ export function renderPlaylistPage(playlist: any, songs: any[]): string {
 	// Download functions
 	function downloadSong(id) {
 		const a = document.createElement('a');
-		a.href = '/download/' + id;
+		a.href = '/download/' + id + '?token=' + ACCESS_TOKEN;
 		a.download = '';
 		document.body.appendChild(a);
 		a.click();

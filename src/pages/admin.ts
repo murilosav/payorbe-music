@@ -372,19 +372,25 @@ export function renderAdminPage(): string {
 			container.innerHTML = '<p style="color:#888;font-size:14px;padding:16px;">Nenhuma playlist criada.</p>';
 			return;
 		}
-		container.innerHTML = data.map(p => \`
-			<div class="playlist-item">
-				<div class="playlist-item-info">
-					<div class="playlist-item-name">\${p.name}</div>
-					<div class="playlist-item-slug">
-						<a href="/\${p.slug}" target="_blank" style="color:#666;text-decoration:none;">/\${p.slug}</a>
+		container.innerHTML = data.map(p => {
+			const fullLink = location.origin + '/' + p.slug + '?token=' + (p.access_token || '');
+			return \`
+			<div class="playlist-item" style="flex-direction:column;align-items:stretch;gap:8px;">
+				<div style="display:flex;justify-content:space-between;align-items:center;">
+					<div class="playlist-item-info">
+						<div class="playlist-item-name">\${p.name}</div>
+					</div>
+					<div class="playlist-item-actions">
+						<button class="btn btn-sm" style="background:#f0f0f0;color:#333;" onclick="copyLink('\${fullLink}')">Copiar Link</button>
+						<a href="\${fullLink}" target="_blank" class="btn btn-sm" style="background:#f0f0f0;color:#333;text-decoration:none;">Abrir</a>
+						<button class="btn btn-danger btn-sm" onclick="deletePlaylist(\${p.id}, '\${p.name}')">Excluir</button>
 					</div>
 				</div>
-				<div class="playlist-item-actions">
-					<button class="btn btn-danger btn-sm" onclick="deletePlaylist(\${p.id}, '\${p.name}')">Excluir</button>
+				<div style="display:flex;align-items:center;gap:6px;">
+					<input type="text" value="\${fullLink}" readonly onclick="this.select()" style="flex:1;font-size:11px;padding:6px 10px;background:#f8f8f8;border:1px solid #eee;border-radius:6px;color:#666;cursor:text;">
 				</div>
-			</div>
-		\`).join('');
+			</div>\`;
+		}).join('');
 	}
 
 	async function createPlaylist() {
@@ -940,6 +946,16 @@ export function renderAdminPage(): string {
 		if (!confirm('Excluir esta musica?')) return;
 		await fetch('/api/songs/' + id, { method: 'DELETE' });
 		loadSongs();
+	}
+
+	// Copy link to clipboard
+	async function copyLink(link) {
+		try {
+			await navigator.clipboard.writeText(link);
+			alert('Link copiado!');
+		} catch (e) {
+			prompt('Copie o link:', link);
+		}
 	}
 
 	// Auto-generate slug from name
