@@ -223,7 +223,7 @@ export function renderAdminPage(): string {
 							<div class="form-group"><label>Descri\u00e7\u00e3o</label><input type="text" id="detailDesc" oninput="onDetailChange()"></div>
 						</div>
 						<div class="form-row">
-							<div class="form-group"><label>JWT Secret (checkout externo)</label><input type="text" id="detailJwtSecret" oninput="onDetailChange()" placeholder="Chave secreta do checkout" style="font-size:12px;font-family:monospace;"></div>
+							<div class="form-group"><label>JWT Secrets (1 por linha)</label><textarea id="detailJwtSecret" oninput="onDetailChange()" placeholder="Cole aqui as chaves secretas do checkout (1 por linha)" rows="3" style="font-size:12px;font-family:monospace;width:100%;padding:10px 14px;border:1px solid #ddd;border-radius:8px;resize:vertical;"></textarea></div>
 						</div>
 					</div>
 				</div>
@@ -510,7 +510,7 @@ export function renderAdminPage(): string {
 					'<input type="text" id="feditName'+folder.id+'" value="'+folder.name.replace(/"/g, '&quot;')+'" placeholder="Nome" style="flex:2;">' +
 					'<input type="text" id="feditSlug'+folder.id+'" value="'+folder.slug+'" placeholder="Slug" style="flex:1;">' +
 					'<input type="text" id="feditDesc'+folder.id+'" value="'+(folder.description||'').replace(/"/g, '&quot;')+'" placeholder="Descri\u00e7\u00e3o" style="flex:2;">' +
-					'<input type="text" id="feditJwt'+folder.id+'" value="'+(folder.jwt_secret||'')+'" placeholder="JWT Secret" style="flex:1;font-size:11px;font-family:monospace;">' +
+					'<textarea id="feditJwt'+folder.id+'" placeholder="JWT Secrets (1 por linha)" rows="2" style="flex:1;font-size:11px;font-family:monospace;padding:6px 10px;border:1px solid #ddd;border-radius:6px;resize:vertical;">'+(folder.jwt_secret||'')+'</textarea>' +
 					'<button class="btn btn-primary btn-sm" onclick="saveFolder('+folder.id+')">Salvar</button>' +
 					'<button class="btn btn-ghost btn-sm" onclick="toggleFolderEdit('+folder.id+')">Cancelar</button>' +
 				'</div>' +

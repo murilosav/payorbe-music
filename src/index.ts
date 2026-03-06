@@ -228,19 +228,28 @@ export default {
 						});
 					}
 
-					const jwtSecret = (playlist || folder).jwt_secret;
-					if (!jwtSecret) {
+					const jwtSecretField = ((playlist || folder).jwt_secret || "").trim();
+					if (!jwtSecretField) {
 						return new Response(renderAccessDenied(), {
 							status: 403, headers: { "content-type": "text/html; charset=utf-8" },
 						});
 					}
 
-					// Verify JWT with this playlist/folder's secret
-					let payload;
-					try {
-						payload = await verifyJwt(token, jwtSecret);
-					} catch (err: any) {
-						const msg = err.message === "Token expirado" ? "expired" : "invalid";
+					// Try each secret (one per line)
+					const secrets = jwtSecretField.split("\n").map((s: string) => s.trim()).filter(Boolean);
+					let payload = null;
+					let lastError = "";
+					for (const secret of secrets) {
+						try {
+							payload = await verifyJwt(token, secret);
+							break;
+						} catch (err: any) {
+							lastError = err.message;
+						}
+					}
+
+					if (!payload) {
+						const msg = lastError === "Token expirado" ? "expired" : "invalid";
 						return new Response(renderJwtError(msg), {
 							status: 403, headers: { "content-type": "text/html; charset=utf-8" },
 						});
