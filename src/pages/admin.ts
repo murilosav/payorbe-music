@@ -255,7 +255,7 @@ export function renderAdminPage(): string {
 				<div class="detail-divider"></div>
 
 				<!-- Link de acesso -->
-				<div class="detail-section-title" style="margin-bottom:8px;"><span>Link de Acesso (token est\u00e1tico)</span></div>
+				<div class="detail-section-title" style="margin-bottom:8px;"><span>Link de Acesso</span></div>
 				<div class="link-row">
 					<input type="text" id="detailLink" readonly onclick="this.select()">
 					<button class="btn btn-ghost btn-sm" onclick="copyDetailLink()">Copiar</button>
@@ -419,7 +419,7 @@ export function renderAdminPage(): string {
 		document.getElementById('detailDesc').value = playlist.description || '';
 		document.getElementById('detailJwtSecret').value = playlist.jwt_secret || '';
 
-		const link = location.origin + '/' + playlist.slug + '?token=' + (playlist.access_token || '');
+		const link = location.origin + '/' + playlist.slug;
 		document.getElementById('detailLink').value = link;
 		document.getElementById('detailOpenLink').href = link;
 
@@ -521,7 +521,7 @@ export function renderAdminPage(): string {
 		// Render folders with their playlists
 		for (var fi = 0; fi < foldersCache.length; fi++) {
 			var folder = foldersCache[fi];
-			var folderLink = location.origin + '/' + folder.slug + '?token=' + (folder.access_token || '');
+			var folderLink = location.origin + '/' + folder.slug;
 			var folderPlaylists = [];
 			for (var pi = 0; pi < playlistsCache.length; pi++) {
 				if (playlistsCache[pi].folder_id === folder.id) folderPlaylists.push(pi);
@@ -656,7 +656,7 @@ export function renderAdminPage(): string {
 			currentPlaylist.name = updated.name;
 			currentPlaylist.slug = updated.slug;
 			currentPlaylist.description = updated.description;
-			var link = location.origin + '/' + updated.slug + '?token=' + (currentPlaylist.access_token || '');
+			var link = location.origin + '/' + updated.slug;
 			document.getElementById('detailLink').value = link;
 			document.getElementById('detailOpenLink').href = link;
 			document.getElementById('saveBtn').style.display = 'none';
