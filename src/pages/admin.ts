@@ -1224,6 +1224,7 @@ export function renderAdminPage(): string {
 				for (var j = 0; j < entries.length; j++) {
 					await readEntryRecursive(entries[j], '', files);
 				}
+				toast(files.length + ' arquivos de \u00e1udio encontrados nas pastas.', 'info');
 				preparePending(files);
 				return;
 			}
@@ -1453,6 +1454,7 @@ export function renderAdminPage(): string {
 			}
 		}
 
+		toast(files.length + ' m\u00fasicas para processar' + (currentSongs.length > 0 ? ' (ap\u00f3s filtro de duplicatas)' : '') + '.', 'info');
 		document.getElementById('uploadSummary').style.display = 'block';
 		document.getElementById('summaryTitle').textContent = 'Lendo metadados...';
 		document.getElementById('summaryInfo').textContent = '0/' + files.length + ' processados';
