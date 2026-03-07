@@ -1233,12 +1233,21 @@ export function renderAdminPage(): string {
 			} else if (entry.isDirectory) {
 				var reader = entry.createReader();
 				var folderName = basePath ? basePath + ' / ' + entry.name : entry.name;
-				reader.readEntries(async function(entries) {
-					for (var i = 0; i < entries.length; i++) {
-						await readEntryRecursive(entries[i], folderName, result);
-					}
-					resolve();
-				});
+				var allEntries = [];
+				function readBatch() {
+					reader.readEntries(async function(entries) {
+						if (entries.length === 0) {
+							for (var i = 0; i < allEntries.length; i++) {
+								await readEntryRecursive(allEntries[i], folderName, result);
+							}
+							resolve();
+						} else {
+							for (var j = 0; j < entries.length; j++) allEntries.push(entries[j]);
+							readBatch();
+						}
+					});
+				}
+				readBatch();
 			} else { resolve(); }
 		});
 	}
@@ -1676,9 +1685,9 @@ export function renderAdminPage(): string {
 		pendingFiles = [];
 		loadDetailSongs();
 
-		// Auto-generate ZIP with ALL songs after upload
+		// Auto-generate ZIP in background (non-blocking)
 		if (uploadedFiles.length > 0) {
-			await regenerateDetailZip();
+			regenerateDetailZip();
 		}
 	}
 
