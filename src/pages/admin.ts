@@ -325,6 +325,14 @@ export function renderAdminPage(): string {
 						</div>
 						<button class="btn btn-primary" onclick="startUpload()">Enviar Tudo</button>
 					</div>
+					<div style="display:flex;gap:16px;align-items:center;margin-bottom:12px;padding:10px 14px;background:#f8f8f8;border-radius:8px;">
+						<label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;white-space:nowrap;">
+							<input type="checkbox" id="turboMode" checked> <strong>Turbo</strong> <span style="color:#888;">(30 paralelos)</span>
+						</label>
+						<label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;white-space:nowrap;">
+							<input type="checkbox" id="skipCovers"> Pular capas <span style="color:#888;">(2x mais r\u00e1pido)</span>
+						</label>
+					</div>
 					<div id="folderPreview" style="max-height:300px;overflow-y:auto;"></div>
 				</div>
 				<div id="uploadProgress" style="display:none;margin-top:12px;">
@@ -1389,7 +1397,7 @@ export function renderAdminPage(): string {
 		return new TextDecoder('iso-8859-1').decode(new Uint8Array(bytes));
 	}
 
-	var PARSE_CONCURRENT = 20;
+	var PARSE_CONCURRENT = 40;
 	async function parseID3Batch(files, onProgress) {
 		var results = new Array(files.length);
 		var nextIdx = 0;
@@ -1511,12 +1519,14 @@ export function renderAdminPage(): string {
 		document.getElementById('folderPreview').innerHTML = previewHtml;
 	}
 
-	var MAX_CONCURRENT = 10;
-
 	async function startUpload() {
 		var playlistId = currentPlaylist ? String(currentPlaylist.id) : null;
 		if (!playlistId) { toast('Nenhuma playlist selecionada.', 'error'); return; }
 		if (pendingFiles.length === 0) return;
+
+		var turbo = document.getElementById('turboMode').checked;
+		var skipCovers = document.getElementById('skipCovers').checked;
+		var MAX_CONCURRENT = turbo ? 30 : 10;
 
 		document.getElementById('uploadSummary').style.display = 'none';
 		document.getElementById('uploadProgress').style.display = 'block';
@@ -1573,11 +1583,12 @@ export function renderAdminPage(): string {
 			document.getElementById('bannerBar').style.width = pct + '%';
 
 			var elapsed = (Date.now() - startTime) / 1000;
+			var speed = completed > 0 ? (completed / elapsed).toFixed(1) : '0';
 			var remaining = completed > 0 ? Math.round((elapsed / completed) * (total - completed)) : 0;
 			var eta = remaining > 60 ? Math.round(remaining / 60) + 'min' : remaining + 's';
 
-			document.getElementById('bannerText').textContent = completed + '/' + total + ' enviadas - ' + eta + ' restante';
-			document.getElementById('progressText').textContent = completed + '/' + total + ' enviadas - ~' + eta + ' restante';
+			document.getElementById('bannerText').textContent = completed + '/' + total + ' \u2022 ' + speed + '/s \u2022 ~' + eta + ' restante';
+			document.getElementById('progressText').textContent = completed + '/' + total + ' enviadas \u2022 ' + speed + ' m\u00fasicas/s \u2022 ~' + eta + ' restante';
 		}
 		updateProgress();
 
@@ -1607,7 +1618,7 @@ export function renderAdminPage(): string {
 					formData.append('album', pending.album || '');
 					formData.append('duration', String(pending.duration || 0));
 					formData.append('folder', pending.folder);
-					if (pending.cover) formData.append('cover', pending.cover, 'cover.jpg');
+					if (pending.cover && !skipCovers) formData.append('cover', pending.cover, 'cover.jpg');
 
 					var res = await fetch('/api/songs/upload', { method: 'POST', body: formData });
 					if (res.ok) {
