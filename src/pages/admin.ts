@@ -171,7 +171,11 @@ export function renderAdminPage(): string {
 		<div class="upload-banner-content">
 			<div class="spinner" id="bannerSpinner"></div>
 			<span class="upload-banner-text" id="bannerText">Enviando...</span>
-			<span class="upload-banner-pct" id="bannerPct">0%</span>
+			<div style="display:flex;align-items:center;gap:10px;">
+				<span class="upload-banner-pct" id="bannerPct">0%</span>
+				<button id="bannerPauseBtn" onclick="toggleUploadPause()" style="background:rgba(255,255,255,0.2);border:none;color:#fff;padding:4px 12px;border-radius:6px;font-size:12px;font-weight:500;cursor:pointer;font-family:inherit;display:none;">Pausar</button>
+				<button id="bannerCancelBtn" onclick="cancelUpload()" style="background:rgba(255,0,0,0.3);border:none;color:#fff;padding:4px 12px;border-radius:6px;font-size:12px;font-weight:500;cursor:pointer;font-family:inherit;display:none;">Cancelar</button>
+			</div>
 		</div>
 		<div class="upload-banner-bar" id="bannerBar" style="width:0%"></div>
 	</div>
@@ -1521,6 +1525,69 @@ export function renderAdminPage(): string {
 		document.getElementById('folderPreview').innerHTML = previewHtml;
 	}
 
+	// ===== Upload Engine =====
+	var uploadState = {
+		running: false,
+		paused: false,
+		cancelled: false,
+		failedFiles: [],
+		uploadedFiles: [],
+		total: 0,
+		completed: 0,
+		errors: 0,
+		bytesUploaded: 0,
+		bytesTotal: 0,
+		startTime: 0,
+		pauseResolve: null,
+	};
+
+	function toggleUploadPause() {
+		if (!uploadState.running) return;
+		uploadState.paused = !uploadState.paused;
+		var btn = document.getElementById('bannerPauseBtn');
+		if (uploadState.paused) {
+			btn.textContent = 'Retomar';
+			btn.style.background = 'rgba(74,222,128,0.4)';
+			document.getElementById('bannerText').textContent = 'PAUSADO - ' + uploadState.completed + '/' + uploadState.total;
+			document.getElementById('bannerSpinner').style.display = 'none';
+		} else {
+			btn.textContent = 'Pausar';
+			btn.style.background = 'rgba(255,255,255,0.2)';
+			document.getElementById('bannerSpinner').style.display = 'block';
+			if (uploadState.pauseResolve) { uploadState.pauseResolve(); uploadState.pauseResolve = null; }
+		}
+	}
+
+	function cancelUpload() {
+		if (!uploadState.running) return;
+		if (!confirm('Cancelar upload? M\u00fasicas j\u00e1 enviadas ser\u00e3o mantidas.')) return;
+		uploadState.cancelled = true;
+		uploadState.paused = false;
+		if (uploadState.pauseResolve) { uploadState.pauseResolve(); uploadState.pauseResolve = null; }
+	}
+
+	function waitIfPaused() {
+		if (!uploadState.paused) return Promise.resolve();
+		return new Promise(function(resolve) { uploadState.pauseResolve = resolve; });
+	}
+
+	async function retryFailed() {
+		if (uploadState.failedFiles.length === 0) return;
+		var retryFiles = uploadState.failedFiles.slice();
+		uploadState.failedFiles = [];
+		pendingFiles = retryFiles;
+		toast('Retentando ' + retryFiles.length + ' m\u00fasica' + (retryFiles.length !== 1 ? 's' : '') + '...', 'info');
+		await startUpload();
+	}
+
+	function formatBytes(bytes) {
+		if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(0) + ' KB';
+		if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(0) + ' MB';
+		return (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
+	}
+
+	var BATCH_SIZE = 500;
+
 	async function startUpload() {
 		var playlistId = currentPlaylist ? String(currentPlaylist.id) : null;
 		if (!playlistId) { toast('Nenhuma playlist selecionada.', 'error'); return; }
@@ -1530,178 +1597,237 @@ export function renderAdminPage(): string {
 		var skipCovers = document.getElementById('skipCovers').checked;
 		var MAX_CONCURRENT = turbo ? 30 : 10;
 
+		var allFiles = pendingFiles.slice();
+		var totalFiles = allFiles.length;
+		var totalBytes = allFiles.reduce(function(s, f) { return s + f.file.size; }, 0);
+
+		// Reset state
+		uploadState.running = true;
+		uploadState.paused = false;
+		uploadState.cancelled = false;
+		uploadState.failedFiles = [];
+		uploadState.uploadedFiles = [];
+		uploadState.total = totalFiles;
+		uploadState.completed = 0;
+		uploadState.errors = 0;
+		uploadState.bytesUploaded = 0;
+		uploadState.bytesTotal = totalBytes;
+		uploadState.startTime = Date.now();
+
 		document.getElementById('uploadSummary').style.display = 'none';
 		document.getElementById('uploadProgress').style.display = 'block';
 
 		var queue = document.getElementById('uploadQueue');
 		queue.innerHTML = '';
 
-		var total = pendingFiles.length;
-		var completed = 0;
-		var errors = 0;
-		var startTime = Date.now();
-		var uploadedFiles = [];
-
 		var banner = document.getElementById('uploadBanner');
 		banner.className = 'upload-banner active';
 		document.getElementById('bannerSpinner').style.display = 'block';
+		document.getElementById('bannerPauseBtn').style.display = 'inline-block';
+		document.getElementById('bannerCancelBtn').style.display = 'inline-block';
 
-		var isLarge = total > 200;
-		var MAX_VISIBLE = isLarge ? 30 : total;
-		var items = new Array(total);
-
-		if (!isLarge) {
-			for (var i = 0; i < total; i++) {
-				items[i] = createQueueItem(pendingFiles[i]);
-				queue.appendChild(items[i]);
-			}
-		}
-
-		function createQueueItem(pending) {
-			var item = document.createElement('div');
-			item.className = 'upload-item';
-			var folderLabel = pending.folder ? '<span class="file-folder">' + pending.folder + '</span>' : '';
-			var sizeMB = (pending.file.size / (1024 * 1024)).toFixed(1);
-			item.innerHTML =
-				'<div class="status-icon waiting"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle></svg></div>' +
-				'<div class="file-info"><span class="file-name">' + pending.title + '</span>' + folderLabel + '</div>' +
-				'<span class="file-status">' + sizeMB + ' MB</span>';
-			return item;
-		}
-
-		function ensureItemVisible(index) {
-			if (isLarge && !items[index]) {
-				items[index] = createQueueItem(pendingFiles[index]);
-				queue.appendChild(items[index]);
-				while (queue.children.length > MAX_VISIBLE) queue.removeChild(queue.firstChild);
-			}
-		}
+		var isLarge = totalFiles > 200;
 
 		function updateProgress() {
-			var pct = Math.round((completed / total) * 100);
+			var pct = totalBytes > 0 ? Math.round((uploadState.bytesUploaded / totalBytes) * 100) : 0;
 			document.getElementById('uploadProgressFill').style.width = pct + '%';
-			document.getElementById('progressCount').textContent = completed + '/' + total;
+			document.getElementById('progressCount').textContent = uploadState.completed + '/' + totalFiles;
 			document.getElementById('bannerPct').textContent = pct + '%';
 			document.getElementById('bannerBar').style.width = pct + '%';
 
-			var elapsed = (Date.now() - startTime) / 1000;
-			var speed = completed > 0 ? (completed / elapsed).toFixed(1) : '0';
-			var remaining = completed > 0 ? Math.round((elapsed / completed) * (total - completed)) : 0;
+			var elapsed = (Date.now() - uploadState.startTime) / 1000;
+			var speed = uploadState.completed > 0 ? (uploadState.completed / elapsed).toFixed(1) : '0';
+			var bytesSpeed = elapsed > 0 ? uploadState.bytesUploaded / elapsed : 0;
+			var remaining = bytesSpeed > 0 ? Math.round((totalBytes - uploadState.bytesUploaded) / bytesSpeed) : 0;
 			var eta = remaining > 60 ? Math.round(remaining / 60) + 'min' : remaining + 's';
 
-			document.getElementById('bannerText').textContent = completed + '/' + total + ' \u2022 ' + speed + '/s \u2022 ~' + eta + ' restante';
-			document.getElementById('progressText').textContent = completed + '/' + total + ' enviadas \u2022 ' + speed + ' m\u00fasicas/s \u2022 ~' + eta + ' restante';
+			var line = uploadState.completed + '/' + totalFiles + ' \u2022 ' +
+				formatBytes(uploadState.bytesUploaded) + '/' + formatBytes(totalBytes) + ' \u2022 ' +
+				speed + '/s \u2022 ~' + eta;
+			document.getElementById('bannerText').textContent = line;
+			document.getElementById('progressText').textContent = line;
 		}
-		updateProgress();
 
-		async function uploadOne(index) {
-			var pending = pendingFiles[index];
-			ensureItemVisible(index);
-			var item = items[index];
+		// Process in batches of BATCH_SIZE for memory efficiency
+		var totalBatches = Math.ceil(totalFiles / BATCH_SIZE);
 
-			item.className = 'upload-item uploading';
-			item.querySelector('.status-icon').className = 'status-icon uploading';
-			item.querySelector('.status-icon').innerHTML = '<div class="spinner" style="width:16px;height:16px;border-width:2px;border-color:rgba(0,0,0,0.15);border-top-color:#1a1a1a;border-radius:50%;animation:spin 0.8s linear infinite;"></div>';
-			item.querySelector('.file-status').textContent = 'Enviando...';
+		for (var batchIdx = 0; batchIdx < totalBatches; batchIdx++) {
+			if (uploadState.cancelled) break;
 
-			var success = false;
-			var MAX_RETRIES = 5;
-			for (var attempt = 0; attempt < MAX_RETRIES && !success; attempt++) {
-				try {
-					if (attempt > 0) {
-						var delay = Math.min(1000 * Math.pow(2, attempt - 1), 15000);
-						item.querySelector('.file-status').textContent = 'Tentativa ' + (attempt + 1) + '/' + MAX_RETRIES + ' (aguardando ' + Math.round(delay/1000) + 's)...';
-						await new Promise(function(r) { setTimeout(r, delay); });
-					}
+			var batchStart = batchIdx * BATCH_SIZE;
+			var batchEnd = Math.min(batchStart + BATCH_SIZE, totalFiles);
+			var batch = allFiles.slice(batchStart, batchEnd);
 
-					var formData = new FormData();
-					formData.append('file', pending.file);
-					formData.append('playlist_id', playlistId);
-					formData.append('title', pending.title);
-					formData.append('artist', pending.artist || 'Desconhecido');
-					formData.append('album', pending.album || '');
-					formData.append('duration', String(pending.duration || 0));
-					formData.append('folder', pending.folder);
-					if (pending.cover && !skipCovers) formData.append('cover', pending.cover, 'cover.jpg');
+			if (totalBatches > 1) {
+				toast('Lote ' + (batchIdx + 1) + '/' + totalBatches + ' (' + batch.length + ' m\u00fasicas)', 'info');
+			}
 
-					var res = await fetch('/api/songs/upload', { method: 'POST', body: formData });
-					if (res.ok) {
-						uploadedFiles.push(pending);
-						item.className = 'upload-item';
-						item.querySelector('.status-icon').className = 'status-icon done';
-						item.querySelector('.status-icon').innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"></path></svg>';
-						item.querySelector('.file-status').textContent = 'Enviado';
-						item.querySelector('.file-status').style.color = '#22c55e';
-						success = true;
-					} else if (res.status === 409) {
-						item.className = 'upload-item';
-						item.querySelector('.status-icon').className = 'status-icon done';
-						item.querySelector('.status-icon').innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"></path></svg>';
-						item.querySelector('.file-status').textContent = 'J\u00e1 existe';
-						item.querySelector('.file-status').style.color = '#d97706';
-						success = true;
-					} else {
-						var errText = await res.text();
-						var errMsg = 'Erro ' + res.status;
-						try { errMsg = JSON.parse(errText).error || errMsg; } catch(e) {}
-						if (res.status >= 500 && attempt < MAX_RETRIES - 1) throw new Error(errMsg);
-						throw new Error(errMsg);
-					}
-				} catch (err) {
-					if (attempt === MAX_RETRIES - 1) {
-						item.className = 'upload-item';
-						item.querySelector('.status-icon').className = 'status-icon error';
-						item.querySelector('.status-icon').innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>';
-						item.querySelector('.file-status').textContent = err.message;
-						item.querySelector('.file-status').style.color = '#ef4444';
-						errors++;
-					}
+			var items = new Array(batch.length);
+			queue.innerHTML = '';
+
+			if (!isLarge) {
+				for (var i = 0; i < batch.length; i++) {
+					items[i] = createQueueItem(batch[i]);
+					queue.appendChild(items[i]);
 				}
 			}
-			completed++;
-			updateProgress();
-		}
 
-		var nextIndex = 0;
-		async function runWorker() {
-			while (nextIndex < total) {
-				var idx = nextIndex++;
-				await uploadOne(idx);
+			function createQueueItem(pending) {
+				var item = document.createElement('div');
+				item.className = 'upload-item';
+				var folderLabel = pending.folder ? '<span class="file-folder">' + pending.folder + '</span>' : '';
+				var sizeMB = (pending.file.size / (1024 * 1024)).toFixed(1);
+				item.innerHTML =
+					'<div class="status-icon waiting"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle></svg></div>' +
+					'<div class="file-info"><span class="file-name">' + pending.title + '</span>' + folderLabel + '</div>' +
+					'<span class="file-status">' + sizeMB + ' MB</span>';
+				return item;
 			}
+
+			function ensureItemVisible(index) {
+				if (isLarge && !items[index]) {
+					items[index] = createQueueItem(batch[index]);
+					queue.appendChild(items[index]);
+					while (queue.children.length > 30) queue.removeChild(queue.firstChild);
+				}
+			}
+
+			updateProgress();
+
+			async function uploadOne(index) {
+				if (uploadState.cancelled) return;
+				await waitIfPaused();
+				if (uploadState.cancelled) return;
+
+				var pending = batch[index];
+				ensureItemVisible(index);
+				var item = items[index];
+
+				item.className = 'upload-item uploading';
+				item.querySelector('.status-icon').className = 'status-icon uploading';
+				item.querySelector('.status-icon').innerHTML = '<div class="spinner" style="width:16px;height:16px;border-width:2px;border-color:rgba(0,0,0,0.15);border-top-color:#1a1a1a;border-radius:50%;animation:spin 0.8s linear infinite;"></div>';
+				item.querySelector('.file-status').textContent = 'Enviando...';
+
+				var success = false;
+				var MAX_RETRIES = 5;
+				for (var attempt = 0; attempt < MAX_RETRIES && !success; attempt++) {
+					if (uploadState.cancelled) return;
+					await waitIfPaused();
+					if (uploadState.cancelled) return;
+
+					try {
+						if (attempt > 0) {
+							var delay = Math.min(1000 * Math.pow(2, attempt - 1), 15000);
+							item.querySelector('.file-status').textContent = 'Tentativa ' + (attempt + 1) + '/' + MAX_RETRIES + ' (' + Math.round(delay/1000) + 's)...';
+							await new Promise(function(r) { setTimeout(r, delay); });
+						}
+
+						var formData = new FormData();
+						formData.append('file', pending.file);
+						formData.append('playlist_id', playlistId);
+						formData.append('title', pending.title);
+						formData.append('artist', pending.artist || 'Desconhecido');
+						formData.append('album', pending.album || '');
+						formData.append('duration', String(pending.duration || 0));
+						formData.append('folder', pending.folder);
+						if (pending.cover && !skipCovers) formData.append('cover', pending.cover, 'cover.jpg');
+
+						var res = await fetch('/api/songs/upload', { method: 'POST', body: formData });
+						if (res.ok) {
+							uploadState.uploadedFiles.push(pending);
+							uploadState.bytesUploaded += pending.file.size;
+							item.className = 'upload-item';
+							item.querySelector('.status-icon').className = 'status-icon done';
+							item.querySelector('.status-icon').innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"></path></svg>';
+							item.querySelector('.file-status').textContent = 'Enviado';
+							item.querySelector('.file-status').style.color = '#22c55e';
+							success = true;
+						} else if (res.status === 409) {
+							uploadState.bytesUploaded += pending.file.size;
+							item.className = 'upload-item';
+							item.querySelector('.status-icon').className = 'status-icon done';
+							item.querySelector('.status-icon').innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"></path></svg>';
+							item.querySelector('.file-status').textContent = 'J\u00e1 existe';
+							item.querySelector('.file-status').style.color = '#d97706';
+							success = true;
+						} else {
+							var errText = await res.text();
+							var errMsg = 'Erro ' + res.status;
+							try { errMsg = JSON.parse(errText).error || errMsg; } catch(e) {}
+							throw new Error(errMsg);
+						}
+					} catch (err) {
+						if (attempt === MAX_RETRIES - 1) {
+							uploadState.failedFiles.push(pending);
+							uploadState.bytesUploaded += pending.file.size;
+							item.className = 'upload-item';
+							item.querySelector('.status-icon').className = 'status-icon error';
+							item.querySelector('.status-icon').innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>';
+							item.querySelector('.file-status').textContent = err.message;
+							item.querySelector('.file-status').style.color = '#ef4444';
+							uploadState.errors++;
+						}
+					}
+				}
+				uploadState.completed++;
+				updateProgress();
+			}
+
+			var nextIndex = 0;
+			async function runWorker() {
+				while (nextIndex < batch.length) {
+					if (uploadState.cancelled) return;
+					var idx = nextIndex++;
+					await uploadOne(idx);
+				}
+			}
+
+			var workers = [];
+			for (var w = 0; w < Math.min(MAX_CONCURRENT, batch.length); w++) workers.push(runWorker());
+			await Promise.all(workers);
+
+			// Free batch references for GC
+			batch = null;
+			items = null;
 		}
 
-		var workers = [];
-		for (var w = 0; w < Math.min(MAX_CONCURRENT, total); w++) workers.push(runWorker());
-		await Promise.all(workers);
-
-		var elapsed = Math.round((Date.now() - startTime) / 1000);
+		// === Finished ===
+		uploadState.running = false;
+		var elapsed = Math.round((Date.now() - uploadState.startTime) / 1000);
 		var elapsedStr = elapsed > 60 ? Math.round(elapsed / 60) + 'min ' + (elapsed % 60) + 's' : elapsed + 's';
 
 		document.getElementById('bannerSpinner').style.display = 'none';
-		if (errors > 0) {
+		document.getElementById('bannerPauseBtn').style.display = 'none';
+		document.getElementById('bannerCancelBtn').style.display = 'none';
+
+		if (uploadState.cancelled) {
 			banner.className = 'upload-banner active has-errors';
-			document.getElementById('bannerText').textContent = 'Conclu\u00eddo com ' + errors + ' erro(s) de ' + total + ' em ' + elapsedStr;
-			document.getElementById('progressText').textContent = 'Conclu\u00eddo com ' + errors + ' erro(s) em ' + elapsedStr;
+			document.getElementById('bannerText').textContent = 'Cancelado - ' + uploadState.completed + '/' + totalFiles + ' enviadas em ' + elapsedStr;
+			document.getElementById('progressText').textContent = 'Upload cancelado. ' + uploadState.completed + ' de ' + totalFiles + ' enviadas.';
+		} else if (uploadState.errors > 0) {
+			banner.className = 'upload-banner active has-errors';
+			var failMsg = uploadState.errors + ' erro(s) de ' + totalFiles + ' em ' + elapsedStr;
+			document.getElementById('bannerText').textContent = failMsg;
+			document.getElementById('progressText').innerHTML = failMsg +
+				' <button class="btn btn-primary btn-sm" onclick="retryFailed()" style="margin-left:8px;">Retentar ' + uploadState.failedFiles.length + ' falha(s)</button>';
 		} else {
 			banner.className = 'upload-banner active done';
-			document.getElementById('bannerText').textContent = total + ' m\u00fasica' + (total !== 1 ? 's' : '') + ' enviada' + (total !== 1 ? 's' : '') + ' em ' + elapsedStr + '!';
+			document.getElementById('bannerText').textContent = totalFiles + ' m\u00fasica' + (totalFiles !== 1 ? 's' : '') + ' \u2022 ' + formatBytes(totalBytes) + ' em ' + elapsedStr + '!';
 			document.getElementById('progressText').textContent = 'Upload conclu\u00eddo em ' + elapsedStr + '!';
 		}
 		document.getElementById('bannerPct').textContent = '100%';
 		document.getElementById('bannerBar').style.width = '100%';
 
-		// Update song count
-		currentPlaylist.song_count = (currentPlaylist.song_count || 0) + uploadedFiles.length;
+		currentPlaylist.song_count = (currentPlaylist.song_count || 0) + uploadState.uploadedFiles.length;
 
-		if (errors === 0) {
+		if (uploadState.errors === 0 && !uploadState.cancelled) {
 			setTimeout(function() { banner.className = 'upload-banner'; }, 8000);
 		}
 
 		pendingFiles = [];
 		loadDetailSongs();
 
-		// Auto-generate ZIP in background (non-blocking)
-		if (uploadedFiles.length > 0) {
+		if (uploadState.uploadedFiles.length > 0) {
 			regenerateDetailZip();
 		}
 	}
