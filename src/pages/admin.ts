@@ -1490,8 +1490,11 @@ export function renderAdminPage(): string {
 		var withArtist = pendingFiles.filter(function(f) { return f.artist !== 'Desconhecido'; }).length;
 		var folderCount = Object.keys(grouped).length;
 
+		var tooLarge = pendingFiles.filter(function(f) { return f.file.size > 95 * 1024 * 1024; }).length;
 		document.getElementById('summaryTitle').textContent = folderCount + ' pasta' + (folderCount !== 1 ? 's' : '') + ' | ' + pendingFiles.length + ' m\u00fasicas';
-		document.getElementById('summaryInfo').textContent = sizeMB + ' total | ' + withCover + ' com capa | ' + withArtist + ' com artista';
+		var infoText = sizeMB + ' total | ' + withCover + ' com capa | ' + withArtist + ' com artista';
+		if (tooLarge > 0) infoText += ' | \u26a0 ' + tooLarge + ' arquivo(s) > 95 MB (ser\u00e3o ignorados)';
+		document.getElementById('summaryInfo').textContent = infoText;
 
 		var previewHtml = '';
 		var isLargeBatch = pendingFiles.length > 100;
@@ -1595,7 +1598,12 @@ export function renderAdminPage(): string {
 
 		var turbo = document.getElementById('turboMode').checked;
 		var skipCovers = document.getElementById('skipCovers').checked;
-		var MAX_CONCURRENT = turbo ? 30 : 10;
+		// Reduce concurrency for large files to avoid bandwidth saturation
+		var avgSize = totalBytes / totalFiles;
+		var MAX_CONCURRENT;
+		if (avgSize > 20 * 1024 * 1024) MAX_CONCURRENT = turbo ? 6 : 3;       // >20MB avg: few parallel
+		else if (avgSize > 10 * 1024 * 1024) MAX_CONCURRENT = turbo ? 12 : 6;  // >10MB avg
+		else MAX_CONCURRENT = turbo ? 30 : 10;                                  // small files: full speed
 
 		var allFiles = pendingFiles.slice();
 		var totalFiles = allFiles.length;
@@ -1694,6 +1702,9 @@ export function renderAdminPage(): string {
 
 			updateProgress();
 
+			var activeUploads = 0;
+			var MAX_FILE_SIZE = 95 * 1024 * 1024; // 95 MB (Cloudflare limit ~100MB)
+
 			async function uploadOne(index) {
 				if (uploadState.cancelled) return;
 				await waitIfPaused();
@@ -1703,17 +1714,37 @@ export function renderAdminPage(): string {
 				ensureItemVisible(index);
 				var item = items[index];
 
+				// Skip files too large for Cloudflare
+				if (pending.file.size > MAX_FILE_SIZE) {
+					uploadState.failedFiles.push(pending);
+					uploadState.bytesUploaded += pending.file.size;
+					item.className = 'upload-item';
+					item.querySelector('.status-icon').className = 'status-icon error';
+					item.querySelector('.status-icon').innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>';
+					item.querySelector('.file-status').textContent = 'Muito grande (' + (pending.file.size / (1024*1024)).toFixed(0) + ' MB, max 95 MB)';
+					item.querySelector('.file-status').style.color = '#ef4444';
+					uploadState.errors++;
+					uploadState.completed++;
+					updateProgress();
+					return;
+				}
+
+				activeUploads++;
 				item.className = 'upload-item uploading';
 				item.querySelector('.status-icon').className = 'status-icon uploading';
 				item.querySelector('.status-icon').innerHTML = '<div class="spinner" style="width:16px;height:16px;border-width:2px;border-color:rgba(0,0,0,0.15);border-top-color:#1a1a1a;border-radius:50%;animation:spin 0.8s linear infinite;"></div>';
-				item.querySelector('.file-status').textContent = 'Enviando...';
+				var sizeMB = (pending.file.size / (1024 * 1024)).toFixed(0);
+				item.querySelector('.file-status').textContent = 'Enviando (' + sizeMB + ' MB)...';
 
 				var success = false;
 				var MAX_RETRIES = 5;
+				// Timeout: 30s base + 1s per MB
+				var timeoutMs = 30000 + Math.round(pending.file.size / (1024 * 1024)) * 1000;
+
 				for (var attempt = 0; attempt < MAX_RETRIES && !success; attempt++) {
-					if (uploadState.cancelled) return;
+					if (uploadState.cancelled) { activeUploads--; return; }
 					await waitIfPaused();
-					if (uploadState.cancelled) return;
+					if (uploadState.cancelled) { activeUploads--; return; }
 
 					try {
 						if (attempt > 0) {
@@ -1732,7 +1763,12 @@ export function renderAdminPage(): string {
 						formData.append('folder', pending.folder);
 						if (pending.cover && !skipCovers) formData.append('cover', pending.cover, 'cover.jpg');
 
-						var res = await fetch('/api/songs/upload', { method: 'POST', body: formData });
+						var controller = new AbortController();
+						var timer = setTimeout(function() { controller.abort(); }, timeoutMs);
+
+						var res = await fetch('/api/songs/upload', { method: 'POST', body: formData, signal: controller.signal });
+						clearTimeout(timer);
+
 						if (res.ok) {
 							uploadState.uploadedFiles.push(pending);
 							uploadState.bytesUploaded += pending.file.size;
@@ -1757,6 +1793,7 @@ export function renderAdminPage(): string {
 							throw new Error(errMsg);
 						}
 					} catch (err) {
+						if (err.name === 'AbortError') err = new Error('Timeout (' + Math.round(timeoutMs/1000) + 's)');
 						if (attempt === MAX_RETRIES - 1) {
 							uploadState.failedFiles.push(pending);
 							uploadState.bytesUploaded += pending.file.size;
@@ -1769,6 +1806,7 @@ export function renderAdminPage(): string {
 						}
 					}
 				}
+				activeUploads--;
 				uploadState.completed++;
 				updateProgress();
 			}
