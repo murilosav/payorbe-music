@@ -1601,7 +1601,8 @@ export function renderAdminPage(): string {
 		// Reduce concurrency for large files to avoid bandwidth saturation
 		var avgSize = totalBytes / totalFiles;
 		var MAX_CONCURRENT;
-		if (avgSize > 20 * 1024 * 1024) MAX_CONCURRENT = turbo ? 6 : 3;       // >20MB avg: few parallel
+		if (avgSize > 50 * 1024 * 1024) MAX_CONCURRENT = turbo ? 3 : 2;        // >50MB avg (multipart): very few
+		else if (avgSize > 20 * 1024 * 1024) MAX_CONCURRENT = turbo ? 6 : 3;   // >20MB avg
 		else if (avgSize > 10 * 1024 * 1024) MAX_CONCURRENT = turbo ? 12 : 6;  // >10MB avg
 		else MAX_CONCURRENT = turbo ? 30 : 10;                                  // small files: full speed
 
@@ -1769,16 +1770,20 @@ export function renderAdminPage(): string {
 							}
 							if (!startRes.ok) {
 								var errT = await startRes.text();
-								throw new Error('Start: ' + (JSON.parse(errT).error || 'Erro ' + startRes.status));
+								var errM = 'Erro ' + startRes.status;
+								try { errM = JSON.parse(errT).error || errM; } catch(e) {}
+								throw new Error('Start: ' + errM);
 							}
 
 							var startData = await startRes.json();
 							var uploadId = startData.uploadId;
 							var r2Key = startData.r2Key;
 
-							// 2. Upload chunks
+							// 2. Upload chunks with per-chunk retry
 							var totalChunks = Math.ceil(pending.file.size / CHUNK_SIZE);
 							var parts = [];
+							var CHUNK_RETRIES = 3;
+							var CHUNK_TIMEOUT = 120000; // 2 min per 50MB chunk
 
 							for (var ci = 0; ci < totalChunks; ci++) {
 								if (uploadState.cancelled) return;
@@ -1787,19 +1792,40 @@ export function renderAdminPage(): string {
 								var chunkStart = ci * CHUNK_SIZE;
 								var chunkEnd = Math.min(chunkStart + CHUNK_SIZE, pending.file.size);
 								var chunkBlob = pending.file.slice(chunkStart, chunkEnd);
+								var chunkOk = false;
 
-								item.querySelector('.file-status').textContent = 'Parte ' + (ci + 1) + '/' + totalChunks + ' (' + sizeMB + ' MB)';
+								for (var cr = 0; cr < CHUNK_RETRIES && !chunkOk; cr++) {
+									try {
+										if (cr > 0) {
+											item.querySelector('.file-status').textContent = 'Parte ' + (ci + 1) + '/' + totalChunks + ' retry ' + (cr + 1) + '...';
+											await new Promise(function(r) { setTimeout(r, 2000 * cr); });
+										} else {
+											item.querySelector('.file-status').textContent = 'Parte ' + (ci + 1) + '/' + totalChunks + ' (' + sizeMB + ' MB)';
+										}
 
-								var chunkFd = new FormData();
-								chunkFd.append('chunk', chunkBlob, 'chunk');
-								chunkFd.append('uploadId', uploadId);
-								chunkFd.append('key', r2Key);
-								chunkFd.append('partNumber', String(ci + 1));
+										var chunkFd = new FormData();
+										chunkFd.append('chunk', chunkBlob, 'chunk');
+										chunkFd.append('uploadId', uploadId);
+										chunkFd.append('key', r2Key);
+										chunkFd.append('partNumber', String(ci + 1));
 
-								var partRes = await fetch('/api/songs/upload-part', { method: 'POST', body: chunkFd });
-								if (!partRes.ok) throw new Error('Parte ' + (ci + 1) + ' falhou');
-								var partData = await partRes.json();
-								parts.push({ partNumber: ci + 1, etag: partData.etag });
+										var chunkCtrl = new AbortController();
+										var chunkTimer = setTimeout(function() { chunkCtrl.abort(); }, CHUNK_TIMEOUT);
+										var partRes = await fetch('/api/songs/upload-part', { method: 'POST', body: chunkFd, signal: chunkCtrl.signal });
+										clearTimeout(chunkTimer);
+
+										if (!partRes.ok) {
+											var partErrText = await partRes.text();
+											throw new Error('Erro ' + partRes.status);
+										}
+										var partData = await partRes.json();
+										parts.push({ partNumber: ci + 1, etag: partData.etag });
+										chunkOk = true;
+									} catch (chunkErr) {
+										if (chunkErr.name === 'AbortError') chunkErr = new Error('Timeout chunk');
+										if (cr === CHUNK_RETRIES - 1) throw new Error('Parte ' + (ci + 1) + '/' + totalChunks + ': ' + chunkErr.message);
+									}
+								}
 							}
 
 							// 3. Complete
@@ -1820,7 +1846,12 @@ export function renderAdminPage(): string {
 									file_size: pending.file.size
 								})
 							});
-							if (!completeRes.ok) throw new Error('Complete falhou');
+							if (!completeRes.ok) {
+								var compErr = await completeRes.text();
+								var compMsg = 'Erro ' + completeRes.status;
+								try { compMsg = JSON.parse(compErr).error || compMsg; } catch(e) {}
+								throw new Error('Complete: ' + compMsg);
+							}
 
 							uploadState.uploadedFiles.push(pending);
 							uploadState.bytesUploaded += pending.file.size;
