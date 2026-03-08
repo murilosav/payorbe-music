@@ -1490,10 +1490,10 @@ export function renderAdminPage(): string {
 		var withArtist = pendingFiles.filter(function(f) { return f.artist !== 'Desconhecido'; }).length;
 		var folderCount = Object.keys(grouped).length;
 
-		var tooLarge = pendingFiles.filter(function(f) { return f.file.size > 95 * 1024 * 1024; }).length;
+		var largeFiles = pendingFiles.filter(function(f) { return f.file.size > 90 * 1024 * 1024; }).length;
 		document.getElementById('summaryTitle').textContent = folderCount + ' pasta' + (folderCount !== 1 ? 's' : '') + ' | ' + pendingFiles.length + ' m\u00fasicas';
 		var infoText = sizeMB + ' total | ' + withCover + ' com capa | ' + withArtist + ' com artista';
-		if (tooLarge > 0) infoText += ' | \u26a0 ' + tooLarge + ' arquivo(s) > 95 MB (ser\u00e3o ignorados)';
+		if (largeFiles > 0) infoText += ' | ' + largeFiles + ' grande(s) via multipart';
 		document.getElementById('summaryInfo').textContent = infoText;
 
 		var previewHtml = '';
@@ -1702,8 +1702,8 @@ export function renderAdminPage(): string {
 
 			updateProgress();
 
-			var activeUploads = 0;
-			var MAX_FILE_SIZE = 95 * 1024 * 1024; // 95 MB (Cloudflare limit ~100MB)
+			var MULTIPART_THRESHOLD = 90 * 1024 * 1024; // 90 MB — use multipart above this
+			var CHUNK_SIZE = 50 * 1024 * 1024; // 50 MB per chunk
 
 			async function uploadOne(index) {
 				if (uploadState.cancelled) return;
@@ -1714,37 +1714,21 @@ export function renderAdminPage(): string {
 				ensureItemVisible(index);
 				var item = items[index];
 
-				// Skip files too large for Cloudflare
-				if (pending.file.size > MAX_FILE_SIZE) {
-					uploadState.failedFiles.push(pending);
-					uploadState.bytesUploaded += pending.file.size;
-					item.className = 'upload-item';
-					item.querySelector('.status-icon').className = 'status-icon error';
-					item.querySelector('.status-icon').innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>';
-					item.querySelector('.file-status').textContent = 'Muito grande (' + (pending.file.size / (1024*1024)).toFixed(0) + ' MB, max 95 MB)';
-					item.querySelector('.file-status').style.color = '#ef4444';
-					uploadState.errors++;
-					uploadState.completed++;
-					updateProgress();
-					return;
-				}
-
-				activeUploads++;
 				item.className = 'upload-item uploading';
 				item.querySelector('.status-icon').className = 'status-icon uploading';
 				item.querySelector('.status-icon').innerHTML = '<div class="spinner" style="width:16px;height:16px;border-width:2px;border-color:rgba(0,0,0,0.15);border-top-color:#1a1a1a;border-radius:50%;animation:spin 0.8s linear infinite;"></div>';
 				var sizeMB = (pending.file.size / (1024 * 1024)).toFixed(0);
-				item.querySelector('.file-status').textContent = 'Enviando (' + sizeMB + ' MB)...';
+				var isMultipart = pending.file.size > MULTIPART_THRESHOLD;
+				item.querySelector('.file-status').textContent = (isMultipart ? 'Multipart ' : 'Enviando ') + '(' + sizeMB + ' MB)...';
 
 				var success = false;
 				var MAX_RETRIES = 5;
-				// Timeout: 30s base + 1s per MB
 				var timeoutMs = 30000 + Math.round(pending.file.size / (1024 * 1024)) * 1000;
 
 				for (var attempt = 0; attempt < MAX_RETRIES && !success; attempt++) {
-					if (uploadState.cancelled) { activeUploads--; return; }
+					if (uploadState.cancelled) return;
 					await waitIfPaused();
-					if (uploadState.cancelled) { activeUploads--; return; }
+					if (uploadState.cancelled) return;
 
 					try {
 						if (attempt > 0) {
@@ -1753,44 +1737,141 @@ export function renderAdminPage(): string {
 							await new Promise(function(r) { setTimeout(r, delay); });
 						}
 
-						var formData = new FormData();
-						formData.append('file', pending.file);
-						formData.append('playlist_id', playlistId);
-						formData.append('title', pending.title);
-						formData.append('artist', pending.artist || 'Desconhecido');
-						formData.append('album', pending.album || '');
-						formData.append('duration', String(pending.duration || 0));
-						formData.append('folder', pending.folder);
-						if (pending.cover && !skipCovers) formData.append('cover', pending.cover, 'cover.jpg');
+						if (isMultipart) {
+							// === MULTIPART UPLOAD for large files ===
+							// 1. Start
+							item.querySelector('.file-status').textContent = 'Iniciando multipart (' + sizeMB + ' MB)...';
+							var startRes = await fetch('/api/songs/upload-start', {
+								method: 'POST',
+								headers: { 'Content-Type': 'application/json' },
+								body: JSON.stringify({
+									playlist_id: playlistId,
+									filename: pending.file.name,
+									title: pending.title,
+									artist: pending.artist || 'Desconhecido',
+									album: pending.album || '',
+									folder: pending.folder,
+									duration: pending.duration || 0,
+									file_size: pending.file.size,
+									content_type: pending.file.type || 'audio/mpeg'
+								})
+							});
 
-						var controller = new AbortController();
-						var timer = setTimeout(function() { controller.abort(); }, timeoutMs);
+							if (startRes.status === 409) {
+								uploadState.bytesUploaded += pending.file.size;
+								item.className = 'upload-item';
+								item.querySelector('.status-icon').className = 'status-icon done';
+								item.querySelector('.status-icon').innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"></path></svg>';
+								item.querySelector('.file-status').textContent = 'J\u00e1 existe';
+								item.querySelector('.file-status').style.color = '#d97706';
+								success = true;
+								break;
+							}
+							if (!startRes.ok) {
+								var errT = await startRes.text();
+								throw new Error('Start: ' + (JSON.parse(errT).error || 'Erro ' + startRes.status));
+							}
 
-						var res = await fetch('/api/songs/upload', { method: 'POST', body: formData, signal: controller.signal });
-						clearTimeout(timer);
+							var startData = await startRes.json();
+							var uploadId = startData.uploadId;
+							var r2Key = startData.r2Key;
 
-						if (res.ok) {
+							// 2. Upload chunks
+							var totalChunks = Math.ceil(pending.file.size / CHUNK_SIZE);
+							var parts = [];
+
+							for (var ci = 0; ci < totalChunks; ci++) {
+								if (uploadState.cancelled) return;
+								await waitIfPaused();
+
+								var chunkStart = ci * CHUNK_SIZE;
+								var chunkEnd = Math.min(chunkStart + CHUNK_SIZE, pending.file.size);
+								var chunkBlob = pending.file.slice(chunkStart, chunkEnd);
+
+								item.querySelector('.file-status').textContent = 'Parte ' + (ci + 1) + '/' + totalChunks + ' (' + sizeMB + ' MB)';
+
+								var chunkFd = new FormData();
+								chunkFd.append('chunk', chunkBlob, 'chunk');
+								chunkFd.append('uploadId', uploadId);
+								chunkFd.append('key', r2Key);
+								chunkFd.append('partNumber', String(ci + 1));
+
+								var partRes = await fetch('/api/songs/upload-part', { method: 'POST', body: chunkFd });
+								if (!partRes.ok) throw new Error('Parte ' + (ci + 1) + ' falhou');
+								var partData = await partRes.json();
+								parts.push({ partNumber: ci + 1, etag: partData.etag });
+							}
+
+							// 3. Complete
+							item.querySelector('.file-status').textContent = 'Finalizando (' + sizeMB + ' MB)...';
+							var completeRes = await fetch('/api/songs/upload-complete', {
+								method: 'POST',
+								headers: { 'Content-Type': 'application/json' },
+								body: JSON.stringify({
+									uploadId: uploadId,
+									r2Key: r2Key,
+									parts: parts,
+									playlist_id: playlistId,
+									title: pending.title,
+									artist: pending.artist || 'Desconhecido',
+									album: pending.album || '',
+									folder: pending.folder,
+									duration: pending.duration || 0,
+									file_size: pending.file.size
+								})
+							});
+							if (!completeRes.ok) throw new Error('Complete falhou');
+
 							uploadState.uploadedFiles.push(pending);
 							uploadState.bytesUploaded += pending.file.size;
 							item.className = 'upload-item';
 							item.querySelector('.status-icon').className = 'status-icon done';
 							item.querySelector('.status-icon').innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"></path></svg>';
-							item.querySelector('.file-status').textContent = 'Enviado';
+							item.querySelector('.file-status').textContent = 'Enviado (multipart)';
 							item.querySelector('.file-status').style.color = '#22c55e';
 							success = true;
-						} else if (res.status === 409) {
-							uploadState.bytesUploaded += pending.file.size;
-							item.className = 'upload-item';
-							item.querySelector('.status-icon').className = 'status-icon done';
-							item.querySelector('.status-icon').innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"></path></svg>';
-							item.querySelector('.file-status').textContent = 'J\u00e1 existe';
-							item.querySelector('.file-status').style.color = '#d97706';
-							success = true;
+
 						} else {
-							var errText = await res.text();
-							var errMsg = 'Erro ' + res.status;
-							try { errMsg = JSON.parse(errText).error || errMsg; } catch(e) {}
-							throw new Error(errMsg);
+							// === NORMAL UPLOAD for small files ===
+							var formData = new FormData();
+							formData.append('file', pending.file);
+							formData.append('playlist_id', playlistId);
+							formData.append('title', pending.title);
+							formData.append('artist', pending.artist || 'Desconhecido');
+							formData.append('album', pending.album || '');
+							formData.append('duration', String(pending.duration || 0));
+							formData.append('folder', pending.folder);
+							if (pending.cover && !skipCovers) formData.append('cover', pending.cover, 'cover.jpg');
+
+							var controller = new AbortController();
+							var timer = setTimeout(function() { controller.abort(); }, timeoutMs);
+
+							var res = await fetch('/api/songs/upload', { method: 'POST', body: formData, signal: controller.signal });
+							clearTimeout(timer);
+
+							if (res.ok) {
+								uploadState.uploadedFiles.push(pending);
+								uploadState.bytesUploaded += pending.file.size;
+								item.className = 'upload-item';
+								item.querySelector('.status-icon').className = 'status-icon done';
+								item.querySelector('.status-icon').innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"></path></svg>';
+								item.querySelector('.file-status').textContent = 'Enviado';
+								item.querySelector('.file-status').style.color = '#22c55e';
+								success = true;
+							} else if (res.status === 409) {
+								uploadState.bytesUploaded += pending.file.size;
+								item.className = 'upload-item';
+								item.querySelector('.status-icon').className = 'status-icon done';
+								item.querySelector('.status-icon').innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"></path></svg>';
+								item.querySelector('.file-status').textContent = 'J\u00e1 existe';
+								item.querySelector('.file-status').style.color = '#d97706';
+								success = true;
+							} else {
+								var errText = await res.text();
+								var errMsg = 'Erro ' + res.status;
+								try { errMsg = JSON.parse(errText).error || errMsg; } catch(e) {}
+								throw new Error(errMsg);
+							}
 						}
 					} catch (err) {
 						if (err.name === 'AbortError') err = new Error('Timeout (' + Math.round(timeoutMs/1000) + 's)');
@@ -1806,7 +1887,6 @@ export function renderAdminPage(): string {
 						}
 					}
 				}
-				activeUploads--;
 				uploadState.completed++;
 				updateProgress();
 			}

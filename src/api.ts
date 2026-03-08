@@ -386,6 +386,75 @@ export async function handleApi(request: Request, env: Env, path: string): Promi
 		});
 	}
 
+	// POST /api/songs/upload-start - Start multipart upload for large files
+	if (path === "/api/songs/upload-start" && request.method === "POST") {
+		const body = await request.json<{
+			playlist_id: string; filename: string; title: string; artist: string;
+			album: string; folder: string; duration: number; file_size: number; content_type: string;
+		}>();
+
+		if (!body.playlist_id || !body.filename || !body.title) {
+			return json({ error: "playlist_id, filename, and title are required" }, 400);
+		}
+
+		const playlist = await env.DB.prepare("SELECT slug FROM playlists WHERE id = ?")
+			.bind(parseInt(body.playlist_id)).first<{ slug: string }>();
+		if (!playlist) return json({ error: "Playlist not found" }, 404);
+
+		const folderPath = body.folder ? `${body.folder}/` : "";
+		const r2Key = `playlists/${playlist.slug}/${folderPath}${body.filename}`;
+
+		// Check for duplicate
+		const existing = await env.DB.prepare(
+			"SELECT id FROM songs WHERE playlist_id = ? AND r2_key = ?"
+		).bind(parseInt(body.playlist_id), r2Key).first();
+		if (existing) {
+			return json({ error: "duplicate", message: "M\u00fasica j\u00e1 existe nesta playlist" }, 409);
+		}
+
+		const upload = await env.MUSIC_BUCKET.createMultipartUpload(r2Key, {
+			httpMetadata: { contentType: body.content_type || "audio/mpeg" },
+		});
+
+		return json({ uploadId: upload.uploadId, r2Key: r2Key });
+	}
+
+	// POST /api/songs/upload-part - Upload a chunk of multipart song
+	if (path === "/api/songs/upload-part" && request.method === "POST") {
+		const formData = await request.formData();
+		const chunk = formData.get("chunk") as File;
+		const uploadId = formData.get("uploadId") as string;
+		const key = formData.get("key") as string;
+		const partNumber = parseInt(formData.get("partNumber") as string);
+
+		const upload = env.MUSIC_BUCKET.resumeMultipartUpload(key, uploadId);
+		const uploaded = await upload.uploadPart(partNumber, chunk.stream());
+		return json({ etag: uploaded.etag });
+	}
+
+	// POST /api/songs/upload-complete - Complete multipart song upload and insert DB record
+	if (path === "/api/songs/upload-complete" && request.method === "POST") {
+		const body = await request.json<{
+			uploadId: string; r2Key: string;
+			parts: { partNumber: number; etag: string }[];
+			playlist_id: string; title: string; artist: string;
+			album: string; folder: string; duration: number; file_size: number;
+		}>();
+
+		const upload = env.MUSIC_BUCKET.resumeMultipartUpload(body.r2Key, body.uploadId);
+		await upload.complete(body.parts);
+
+		// Insert into DB
+		await env.DB.prepare(
+			`INSERT INTO songs (playlist_id, title, artist, album, duration, track_number, folder, r2_key, cover_r2_key, file_size)
+			 VALUES (?, ?, ?, ?, ?, 0, ?, ?, '', ?)`
+		).bind(parseInt(body.playlist_id), body.title, body.artist || "Desconhecido", body.album || "",
+			body.duration || 0, body.folder || "", body.r2Key, body.file_size || 0).run();
+
+		const song = await env.DB.prepare("SELECT * FROM songs WHERE r2_key = ?").bind(body.r2Key).first();
+		return json(song, 201);
+	}
+
 	// POST /api/songs/upload - Upload a song file (with optional cover)
 	if (path === "/api/songs/upload" && request.method === "POST") {
 		const formData = await request.formData();
