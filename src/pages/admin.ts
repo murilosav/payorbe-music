@@ -1605,11 +1605,13 @@ export function renderAdminPage(): string {
 			item.querySelector('.file-status').textContent = 'Enviando...';
 
 			var success = false;
-			for (var attempt = 0; attempt < 3 && !success; attempt++) {
+			var MAX_RETRIES = 5;
+			for (var attempt = 0; attempt < MAX_RETRIES && !success; attempt++) {
 				try {
 					if (attempt > 0) {
-						item.querySelector('.file-status').textContent = 'Tentativa ' + (attempt + 1) + '/3...';
-						await new Promise(function(r) { setTimeout(r, 1000 * attempt); });
+						var delay = Math.min(1000 * Math.pow(2, attempt - 1), 15000);
+						item.querySelector('.file-status').textContent = 'Tentativa ' + (attempt + 1) + '/' + MAX_RETRIES + ' (aguardando ' + Math.round(delay/1000) + 's)...';
+						await new Promise(function(r) { setTimeout(r, delay); });
 					}
 
 					var formData = new FormData();
@@ -1632,7 +1634,6 @@ export function renderAdminPage(): string {
 						item.querySelector('.file-status').style.color = '#22c55e';
 						success = true;
 					} else if (res.status === 409) {
-						// Duplicate - skip without error
 						item.className = 'upload-item';
 						item.querySelector('.status-icon').className = 'status-icon done';
 						item.querySelector('.status-icon').innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"></path></svg>';
@@ -1643,10 +1644,11 @@ export function renderAdminPage(): string {
 						var errText = await res.text();
 						var errMsg = 'Erro ' + res.status;
 						try { errMsg = JSON.parse(errText).error || errMsg; } catch(e) {}
+						if (res.status >= 500 && attempt < MAX_RETRIES - 1) throw new Error(errMsg);
 						throw new Error(errMsg);
 					}
 				} catch (err) {
-					if (attempt === 2) {
+					if (attempt === MAX_RETRIES - 1) {
 						item.className = 'upload-item';
 						item.querySelector('.status-icon').className = 'status-icon error';
 						item.querySelector('.status-icon').innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>';
