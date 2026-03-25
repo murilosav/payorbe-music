@@ -1,12 +1,12 @@
-export function renderPlaylistPage(playlist: any, songs: any[], accessToken: string, zips: any[] = []): string {
-	// Group songs by folder
-	const folders = new Map<string, any[]>();
-	for (const song of songs) {
-		const folder = song.folder || "";
-		if (!folders.has(folder)) folders.set(folder, []);
-		folders.get(folder)!.push(song);
-	}
-
+export function renderPlaylistPage(
+	playlist: any,
+	folderStats: Array<{ folder: string; count: number }>,
+	previewSongs: any[],
+	totalCount: number,
+	accessToken: string,
+	zips: any[] = [],
+	expiresAt?: string,
+): string {
 	// Build ZIP availability map: folder → [{ part, total_parts, file_size }]
 	const zipsByFolder = new Map<string, any[]>();
 	for (const zip of zips) {
@@ -20,12 +20,20 @@ export function renderPlaylistPage(playlist: any, songs: any[], accessToken: str
 		? `/playlist-cover/${playlist.id}?token=${esc(accessToken)}`
 		: "";
 
-	// Get up to 20 songs for preview, prioritizing ones with covers
-	const withCover = songs.filter((s: any) => s.cover_r2_key);
-	const withoutCover = songs.filter((s: any) => !s.cover_r2_key);
-	const previewSongs = [...withCover, ...withoutCover].slice(0, 20);
+	// Group preview songs by folder for cover images
+	const previewByFolder = new Map<string, any[]>();
+	for (const song of previewSongs) {
+		const f = song.folder || "";
+		if (!previewByFolder.has(f)) previewByFolder.set(f, []);
+		previewByFolder.get(f)!.push(song);
+	}
 
-	const previewGrid = previewSongs.map((song: any) => `
+	// Get up to 20 songs for preview grid, prioritizing ones with covers
+	const withCover = previewSongs.filter((s: any) => s.cover_r2_key);
+	const withoutCover = previewSongs.filter((s: any) => !s.cover_r2_key);
+	const displaySongs = [...withCover, ...withoutCover].slice(0, 20);
+
+	const previewGrid = displaySongs.map((song: any) => `
 		<div class="preview-card">
 			<div class="preview-cover">
 				${song.cover_r2_key
@@ -83,9 +91,10 @@ export function renderPlaylistPage(playlist: any, songs: any[], accessToken: str
 		}).join("");
 	}
 
-	// Folder sections
-	const folderCards = Array.from(folders.entries()).map(([folderName, folderSongs]) => {
-		const coverSongs = folderSongs.filter((s: any) => s.cover_r2_key).slice(0, 4);
+	// Folder sections — use folderStats for accurate counts, previewSongs for covers
+	const folderCards = folderStats.map(({ folder: folderName, count: songCount }) => {
+		const folderPreview = previewByFolder.get(folderName) || [];
+		const coverSongs = folderPreview.filter((s: any) => s.cover_r2_key).slice(0, 4);
 		const displayName = folderName || playlist.name;
 
 		// Mini cover grid (up to 4 covers, using playlist cover as fallback)
@@ -108,7 +117,7 @@ export function renderPlaylistPage(playlist: any, songs: any[], accessToken: str
 				${coverGrid}
 				<div class="folder-details">
 					<h3>${esc(displayName)}</h3>
-					<span class="folder-count">${folderSongs.length} música${folderSongs.length !== 1 ? "s" : ""}</span>
+					<span class="folder-count">${songCount} música${songCount !== 1 ? "s" : ""}</span>
 				</div>
 				<div class="folder-downloads">
 					${renderDownloadButtons(folderName, false)}
@@ -117,11 +126,11 @@ export function renderPlaylistPage(playlist: any, songs: any[], accessToken: str
 		`;
 	}).join("");
 
-	const totalSongs = songs.length;
-	const totalFolders = folders.size;
+	const totalSongs = totalCount;
+	const totalFolders = folderStats.length;
 
 	// For hero button: use "" folder (all songs ZIP) or the single folder's ZIP
-	const heroFolder = totalFolders === 1 ? Array.from(folders.keys())[0] : "";
+	const heroFolder = totalFolders === 1 ? folderStats[0].folder : "";
 
 	return `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -144,6 +153,7 @@ export function renderPlaylistPage(playlist: any, songs: any[], accessToken: str
 				<span>${totalSongs} música${totalSongs !== 1 ? "s" : ""}</span>
 				${totalFolders > 1 ? `<span class="dot"></span><span>${totalFolders} pastas</span>` : ""}
 			</div>
+			${expiresAt ? `<div class="expiry-notice" id="expiryNotice" data-expires="${esc(expiresAt)}"></div>` : ""}
 			<div class="hero-downloads">
 				${renderDownloadButtons(heroFolder, true)}
 			</div>
@@ -155,7 +165,7 @@ export function renderPlaylistPage(playlist: any, songs: any[], accessToken: str
 			<div class="preview-grid">
 				${previewGrid}
 			</div>
-			${songs.length > 20 ? `<p class="preview-note">Mostrando ${previewSongs.length} de ${songs.length} músicas. Baixe para ter acesso a todas.</p>` : ""}
+			${totalSongs > 20 ? `<p class="preview-note">Mostrando ${displaySongs.length} de ${totalSongs} músicas. Baixe para ter acesso a todas.</p>` : ""}
 		</section>
 		` : ""}
 
@@ -168,8 +178,35 @@ export function renderPlaylistPage(playlist: any, songs: any[], accessToken: str
 			</div>
 		</section>
 	</div>
+${expiresAt ? `<script>${expiryScript()}</script>` : ""}
 </body>
 </html>`;
+}
+
+function expiryScript(): string {
+	return `(function(){
+		var el = document.getElementById('expiryNotice');
+		if (!el) return;
+		var exp = new Date(el.dataset.expires);
+		function update() {
+			var now = Date.now();
+			var diff = exp.getTime() - now;
+			if (diff <= 0) { el.innerHTML = '<strong>Link expirado.</strong> Solicite um novo acesso.'; el.className = 'expiry-notice expiry-expired'; return; }
+			var h = Math.floor(diff / 3600000);
+			var m = Math.floor((diff % 3600000) / 60000);
+			var icon = '';
+			var cls = h < 6 ? 'expiry-notice expiry-urgent' : 'expiry-notice';
+			if (h >= 24) {
+				var d = Math.floor(h / 24); h = h % 24;
+				el.innerHTML = icon + ' Este link expira em <strong>' + d + ' dia' + (d !== 1 ? 's' : '') + (h > 0 ? ' e ' + h + 'h' : '') + '</strong>. Baixe suas m\\u00fasicas antes disso.';
+			} else {
+				el.innerHTML = icon + ' Este link expira em <strong>' + h + 'h' + (m > 0 ? m + 'min' : '') + '</strong>. Baixe suas m\\u00fasicas antes disso.';
+			}
+			el.className = cls;
+		}
+		update();
+		setInterval(update, 60000);
+	})();`;
 }
 
 function esc(str: string): string {
@@ -241,6 +278,10 @@ function getStyles(): string {
 	}
 
 	.dot { width: 3px; height: 3px; background: #ccc; border-radius: 50%; }
+
+	.expiry-notice { margin-top: 14px; padding: 10px 16px; background: #f0f4ff; border: 1px solid #d0d9f0; border-radius: 10px; font-size: 13px; color: #444; line-height: 1.5; }
+	.expiry-urgent { background: #fff8f0; border-color: #f0d8b0; color: #8a6d3b; }
+	.expiry-expired { background: #fdf0f0; border-color: #f0c0c0; color: #a94442; }
 
 	.hero-downloads {
 		margin-top: 20px;

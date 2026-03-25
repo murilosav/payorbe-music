@@ -1,4 +1,4 @@
-export function renderFolderPage(folder: any, playlists: any[], allSongs: Map<number, any[]>, allZips: Map<number, any[]>, token: string): string {
+export function renderFolderPage(folder: any, playlists: any[], allSongs: Map<number, any[]>, allZips: Map<number, any[]>, token: string, expiresAt?: string): string {
 	const totalSongs = playlists.reduce((sum, p) => sum + (allSongs.get(p.id) || []).length, 0);
 	const totalZipSize = playlists.reduce((sum, p) => {
 		return sum + (allZips.get(p.id) || []).reduce((s: number, z: any) => s + (z.file_size || 0), 0);
@@ -43,7 +43,8 @@ export function renderFolderPage(folder: any, playlists: any[], allSongs: Map<nu
 				const subSize = subZips.reduce((s: number, z: any) => s + (z.file_size || 0), 0);
 				return subZips.map((z: any) =>
 					`<a href="/download-zip/${esc(p.slug)}/${encodeURIComponent(subf)}?token=${esc(token)}&part=${z.part}" class="btn btn-download btn-sm">
-						${esc(subf)} <span class="zip-size">(${formatSize(subSize)})</span>
+						<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+					Baixar ZIP <span class="zip-size">(${formatSize(subSize)})</span>
 					</a>`
 				).join("");
 			}).join("");
@@ -134,6 +135,9 @@ export function renderFolderPage(folder: any, playlists: any[], allSongs: Map<nu
 	.description { color: #666; font-size: 15px; margin-bottom: 12px; line-height: 1.5; }
 	.stats { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #999; }
 	.dot { width: 3px; height: 3px; background: #ccc; border-radius: 50%; }
+	.expiry-notice { margin-top: 14px; padding: 10px 16px; background: #f0f4ff; border: 1px solid #d0d9f0; border-radius: 10px; font-size: 13px; color: #444; line-height: 1.5; }
+	.expiry-urgent { background: #fff8f0; border-color: #f0d8b0; color: #8a6d3b; }
+	.expiry-expired { background: #fdf0f0; border-color: #f0c0c0; color: #a94442; }
 
 	/* Playlists */
 	.playlists-section h2 { font-size: 16px; font-weight: 600; margin-bottom: 16px; color: #555; }
@@ -196,6 +200,7 @@ export function renderFolderPage(folder: any, playlists: any[], allSongs: Map<nu
 				<span>${totalSongs} m\u00fasica${totalSongs !== 1 ? "s" : ""}</span>
 				${totalZipSize > 0 ? `<span class="dot"></span><span>${formatSize(totalZipSize)} total</span>` : ""}
 			</div>
+			${expiresAt ? `<div class="expiry-notice" id="expiryNotice" data-expires="${esc(expiresAt)}"></div>` : ""}
 		</header>
 
 		<section class="playlists-section">
@@ -203,8 +208,35 @@ export function renderFolderPage(folder: any, playlists: any[], allSongs: Map<nu
 			${playlistCards}
 		</section>
 	</div>
+${expiresAt ? `<script>${expiryScript()}</script>` : ""}
 </body>
 </html>`;
+}
+
+function expiryScript(): string {
+	return `(function(){
+		var el = document.getElementById('expiryNotice');
+		if (!el) return;
+		var exp = new Date(el.dataset.expires);
+		function update() {
+			var now = Date.now();
+			var diff = exp.getTime() - now;
+			if (diff <= 0) { el.innerHTML = '<strong>Link expirado.</strong> Solicite um novo acesso.'; el.className = 'expiry-notice expiry-expired'; return; }
+			var h = Math.floor(diff / 3600000);
+			var m = Math.floor((diff % 3600000) / 60000);
+			var icon = '';
+			var cls = h < 6 ? 'expiry-notice expiry-urgent' : 'expiry-notice';
+			if (h >= 24) {
+				var d = Math.floor(h / 24); h = h % 24;
+				el.innerHTML = icon + ' Este link expira em <strong>' + d + ' dia' + (d !== 1 ? 's' : '') + (h > 0 ? ' e ' + h + 'h' : '') + '</strong>. Baixe suas m\\u00fasicas antes disso.';
+			} else {
+				el.innerHTML = icon + ' Este link expira em <strong>' + h + 'h' + (m > 0 ? m + 'min' : '') + '</strong>. Baixe suas m\\u00fasicas antes disso.';
+			}
+			el.className = cls;
+		}
+		update();
+		setInterval(update, 60000);
+	})();`;
 }
 
 function esc(str: string): string {

@@ -5,48 +5,21 @@ import { renderHomePage } from "./pages/home";
 import { renderAdminPage } from "./pages/admin";
 import { verifyAuth, handleLogin, handleLogout } from "./auth";
 import { verifyJwt } from "./jwt";
-
+import { handlePlaylistCover, handleSongCover, handleDownload } from "./routes/media";
+import { handleZipDownload } from "./routes/zip";
+import { renderAccessDenied, renderJwtError } from "./routes/error-pages";
 export interface Env {
 	DB: D1Database;
 	MUSIC_BUCKET: R2Bucket;
 	ADMIN_KEY?: string;
-}
-
-// Resolve token: if it's a session token, return the real access_token. Otherwise return as-is.
-async function resolveToken(env: Env, token: string): Promise<string> {
-	if (!token) return "";
-	const session = await env.DB.prepare(
-		"SELECT access_token FROM session_tokens WHERE token = ? AND expires_at > datetime('now')"
-	).bind(token).first<{ access_token: string }>();
-	return session ? session.access_token : token;
-}
-
-async function verifySongAccess(env: Env, songId: number, token: string, isAdmin: boolean): Promise<{ r2_key: string; title: string; artist: string; cover_r2_key: string } | null> {
-	// Admin can access any song
-	if (isAdmin) {
-		return env.DB.prepare(
-			"SELECT r2_key, title, artist, cover_r2_key FROM songs WHERE id = ?"
-		).bind(songId).first();
-	}
-	const realToken = await resolveToken(env, token);
-	// Check via session token (resolves to access_token)
-	const direct = await env.DB.prepare(
-		`SELECT s.r2_key, s.title, s.artist, s.cover_r2_key
-		 FROM songs s JOIN playlists p ON s.playlist_id = p.id
-		 WHERE s.id = ? AND p.access_token = ?`
-	).bind(songId, realToken).first<{ r2_key: string; title: string; artist: string; cover_r2_key: string }>();
-	if (direct) return direct;
-	// Check folder access (playlist belongs to a folder with this token)
-	return env.DB.prepare(
-		`SELECT s.r2_key, s.title, s.artist, s.cover_r2_key
-		 FROM songs s JOIN playlists p ON s.playlist_id = p.id
-		 JOIN folders f ON p.folder_id = f.id
-		 WHERE s.id = ? AND f.access_token = ?`
-	).bind(songId, realToken).first();
+	R2_ACCESS_KEY_ID: string;
+	R2_SECRET_ACCESS_KEY: string;
+	CF_ACCOUNT_ID: string;
+	R2_BUCKET_NAME: string;
 }
 
 export default {
-	async fetch(request: Request, env: Env): Promise<Response> {
+	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 		const url = new URL(request.url);
 		const path = url.pathname;
 		const token = url.searchParams.get("token") || "";
@@ -70,162 +43,38 @@ export default {
 				env.DB.prepare("DELETE FROM session_tokens WHERE expires_at < datetime('now')").run();
 			}
 
-			// Check if current user is admin (cookie-based)
 			const isAdmin = await verifyAuth(request, env);
 
 			// Auth routes
 			if (path === "/admin/login") return handleLogin(request, env);
 			if (path === "/admin/logout") return handleLogout(request, env);
 
-			// Protected: API routes
+			// API routes (admin only)
 			if (path.startsWith("/api/")) {
 				if (!isAdmin) {
 					return new Response(JSON.stringify({ error: "Unauthorized" }), {
 						status: 401, headers: { "content-type": "application/json" },
 					});
 				}
-				const response = await handleApi(request, env, path);
+				const response = await handleApi(request, env, path, ctx);
 				const newHeaders = new Headers(response.headers);
 				Object.entries(corsHeaders).forEach(([k, v]) => newHeaders.set(k, v));
 				return new Response(response.body, { status: response.status, headers: newHeaders });
 			}
 
-			// Playlist cover image (requires token or admin)
-			if (path.startsWith("/playlist-cover/")) {
-				const playlistId = parseInt(path.split("/")[2]);
-				if (isNaN(playlistId)) return new Response(null, { status: 400 });
-				if (!token && !isAdmin) return new Response(null, { status: 403 });
+			// Media routes (covers, downloads)
+			const playlistCover = await handlePlaylistCover(request, env, path, token, isAdmin);
+			if (playlistCover) return playlistCover;
 
-				let playlist: { cover_r2_key: string } | null = null;
-				if (isAdmin) {
-					playlist = await env.DB.prepare(
-						"SELECT cover_r2_key FROM playlists WHERE id = ?"
-					).bind(playlistId).first<{ cover_r2_key: string }>();
-				} else {
-					const realToken = await resolveToken(env, token);
-					playlist = await env.DB.prepare(
-						"SELECT cover_r2_key FROM playlists WHERE id = ? AND access_token = ?"
-					).bind(playlistId, realToken).first<{ cover_r2_key: string }>();
-					if (!playlist) {
-						playlist = await env.DB.prepare(
-							`SELECT p.cover_r2_key FROM playlists p
-							 JOIN folders f ON p.folder_id = f.id
-							 WHERE p.id = ? AND f.access_token = ?`
-						).bind(playlistId, realToken).first<{ cover_r2_key: string }>();
-					}
-				}
-				if (!playlist || !playlist.cover_r2_key) return new Response(null, { status: 404 });
+			const songCover = await handleSongCover(request, env, path, token, isAdmin);
+			if (songCover) return songCover;
 
-				const object = await env.MUSIC_BUCKET.get(playlist.cover_r2_key);
-				if (!object) return new Response(null, { status: 404 });
+			const download = await handleDownload(request, env, path, token, isAdmin);
+			if (download) return download;
 
-				return new Response(object.body, {
-					headers: {
-						"Content-Type": object.httpMetadata?.contentType || "image/jpeg",
-						"Cache-Control": "private, max-age=86400",
-					},
-				});
-			}
-
-			// Cover image (requires token or admin)
-			if (path.startsWith("/cover/")) {
-				const songId = parseInt(path.split("/")[2]);
-				if (isNaN(songId)) return new Response(null, { status: 400 });
-				if (!token && !isAdmin) return new Response(null, { status: 403 });
-
-				const song = await verifySongAccess(env, songId, token, isAdmin);
-				if (!song || !song.cover_r2_key) return new Response(null, { status: 404 });
-
-				const object = await env.MUSIC_BUCKET.get(song.cover_r2_key);
-				if (!object) return new Response(null, { status: 404 });
-
-				return new Response(object.body, {
-					headers: {
-						"Content-Type": object.httpMetadata?.contentType || "image/jpeg",
-						"Cache-Control": "private, max-age=86400",
-					},
-				});
-			}
-
-			// Download single song (requires token or admin)
-			if (path.startsWith("/download/")) {
-				const songId = parseInt(path.split("/")[2]);
-				if (isNaN(songId)) return new Response("Access denied", { status: 400 });
-				if (!token && !isAdmin) return new Response("Access denied", { status: 403 });
-
-				const song = await verifySongAccess(env, songId, token, isAdmin);
-				if (!song) return new Response("Access denied", { status: 403 });
-
-				const object = await env.MUSIC_BUCKET.get(song.r2_key);
-				if (!object) return new Response("File not found", { status: 404 });
-
-				const ext = song.r2_key.split(".").pop() || "mp3";
-				const filename = `${song.artist} - ${song.title}.${ext}`;
-				const encodedFilename = encodeURIComponent(filename).replace(/%20/g, "+");
-
-				return new Response(object.body, {
-					headers: {
-						"Content-Type": "application/octet-stream",
-						"Content-Disposition": `attachment; filename="${encodedFilename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
-					},
-				});
-			}
-
-			// Download ZIP - serve pre-built ZIP from R2
-			if (path.startsWith("/download-zip/")) {
-				if (!token && !isAdmin) return new Response("Access denied", { status: 403 });
-
-				const parts = path.slice("/download-zip/".length).split("/");
-				const slug = parts[0];
-				const folder = decodeURIComponent(parts.slice(1).join("/") || "");
-				const zipPart = parseInt(url.searchParams.get("part") || "1");
-
-				let playlist: { id: number; name: string } | null = null;
-				if (isAdmin) {
-					playlist = await env.DB.prepare(
-						"SELECT id, name FROM playlists WHERE slug = ?"
-					).bind(slug).first<{ id: number; name: string }>();
-				} else {
-					const realToken = await resolveToken(env, token);
-					playlist = await env.DB.prepare(
-						"SELECT id, name FROM playlists WHERE slug = ? AND access_token = ?"
-					).bind(slug, realToken).first<{ id: number; name: string }>();
-					if (!playlist) {
-						playlist = await env.DB.prepare(
-							`SELECT p.id, p.name FROM playlists p
-							 JOIN folders f ON p.folder_id = f.id
-							 WHERE p.slug = ? AND f.access_token = ?`
-						).bind(slug, realToken).first<{ id: number; name: string }>();
-					}
-				}
-				if (!playlist) return new Response("Access denied", { status: 403 });
-
-				const zip = await env.DB.prepare(
-					"SELECT r2_key, file_size, total_parts FROM playlist_zips WHERE playlist_id = ? AND folder = ? AND part = ?"
-				).bind(playlist.id, folder, zipPart).first<{ r2_key: string; file_size: number; total_parts: number }>();
-
-				if (!zip) {
-					return new Response(renderZipUnavailable(), {
-						status: 404, headers: { "content-type": "text/html; charset=utf-8" },
-					});
-				}
-
-				const object = await env.MUSIC_BUCKET.get(zip.r2_key);
-				if (!object) return new Response("ZIP not found", { status: 404 });
-
-				let zipName = folder ? `${playlist.name} - ${folder}` : playlist.name;
-				if (zip.total_parts > 1) zipName += ` (Parte ${zipPart} de ${zip.total_parts})`;
-				zipName += ".zip";
-
-				const encodedZipName = encodeURIComponent(zipName).replace(/%20/g, "+");
-				return new Response(object.body, {
-					headers: {
-						"Content-Type": "application/zip",
-						"Content-Disposition": `attachment; filename="${encodedZipName}"; filename*=UTF-8''${encodeURIComponent(zipName)}`,
-						"Content-Length": String(zip.file_size),
-					},
-				});
-			}
+			// ZIP download
+			const zipDownload = await handleZipDownload(request, env, path, url, token, isAdmin);
+			if (zipDownload) return zipDownload;
 
 			// Admin page
 			if (path === "/admin") {
@@ -237,164 +86,17 @@ export default {
 				});
 			}
 
-			// Home page (public)
+			// Home page
 			if (path === "/") {
 				return new Response(renderHomePage(), {
-					headers: { "content-type": "text/html; charset=utf-8" },
+					headers: { "content-type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=3600" },
 				});
 			}
 
 			// Playlist or Folder page: /:slug?token=JWT or admin cookie
 			const slug = path.slice(1).split("/")[0];
 			if (slug) {
-				let playlist: any = null;
-				let folder: any = null;
-				let accessToken = ""; // token used for download links
-
-				if (isAdmin && !token) {
-					// Admin access: no token needed, load by slug
-					[playlist, folder] = await Promise.all([
-						env.DB.prepare("SELECT * FROM playlists WHERE slug = ?").bind(slug).first(),
-						env.DB.prepare("SELECT * FROM folders WHERE slug = ?").bind(slug).first(),
-					]);
-				} else if (token) {
-					// Check if it's a session token first (from previous JWT access)
-					const session = await env.DB.prepare(
-						"SELECT access_token FROM session_tokens WHERE token = ? AND expires_at > datetime('now')"
-					).bind(token).first<{ access_token: string }>();
-
-					if (session) {
-						// Valid session token — load by slug (session already verified)
-						[playlist, folder] = await Promise.all([
-							env.DB.prepare("SELECT * FROM playlists WHERE slug = ? AND access_token = ?").bind(slug, session.access_token).first(),
-							env.DB.prepare("SELECT * FROM folders WHERE slug = ? AND access_token = ?").bind(slug, session.access_token).first(),
-						]);
-						accessToken = token;
-					} else if (token.startsWith("eyJ")) {
-						// JWT flow
-						[playlist, folder] = await Promise.all([
-							env.DB.prepare("SELECT * FROM playlists WHERE slug = ?").bind(slug).first(),
-							env.DB.prepare("SELECT * FROM folders WHERE slug = ?").bind(slug).first(),
-						]);
-
-						if (!playlist && !folder) {
-							return new Response(renderAccessDenied(), {
-								status: 403, headers: { "content-type": "text/html; charset=utf-8" },
-							});
-						}
-
-						const jwtSecretField = ((playlist || folder).jwt_secret || "").trim();
-						if (!jwtSecretField) {
-							return new Response(renderAccessDenied(), {
-								status: 403, headers: { "content-type": "text/html; charset=utf-8" },
-							});
-						}
-
-						// Try each secret (one per line)
-						const secrets = jwtSecretField.split("\n").map((s: string) => s.trim()).filter(Boolean);
-						let payload = null;
-						let lastError = "";
-						for (const secret of secrets) {
-							try {
-								payload = await verifyJwt(token, secret);
-								break;
-							} catch (err: any) {
-								lastError = err.message;
-							}
-						}
-
-						if (!payload) {
-							const msg = lastError === "Token expirado" ? "expired" : "invalid";
-							return new Response(renderJwtError(msg), {
-								status: 403, headers: { "content-type": "text/html; charset=utf-8" },
-							});
-						}
-
-						// Check download_limit
-						const existing = await env.DB.prepare(
-							"SELECT access_count FROM order_accesses WHERE order_id = ?"
-						).bind(payload.order_id).first<{ access_count: number }>();
-
-						const currentCount = existing?.access_count || 0;
-						if (payload.download_limit > 0 && currentCount >= payload.download_limit) {
-							return new Response(renderJwtError("limit"), {
-								status: 403, headers: { "content-type": "text/html; charset=utf-8" },
-							});
-						}
-
-						// Upsert access count
-						if (existing) {
-							await env.DB.prepare(
-								"UPDATE order_accesses SET access_count = access_count + 1, last_accessed = datetime('now') WHERE order_id = ?"
-							).bind(payload.order_id).run();
-						} else {
-							await env.DB.prepare(
-								"INSERT INTO order_accesses (order_id, product_id, email, access_count, created_at, last_accessed) VALUES (?, ?, ?, 1, datetime('now'), datetime('now'))"
-							).bind(payload.order_id, payload.product_id, payload.email).run();
-						}
-
-						// Generate temporary session token (expires same as JWT)
-						const sessionBytes = new Uint8Array(32);
-						crypto.getRandomValues(sessionBytes);
-						const sessionToken = Array.from(sessionBytes).map(b => b.toString(16).padStart(2, "0")).join("");
-						const realAccessToken = (playlist || folder).access_token;
-
-						const expiresAt = payload.exp
-							? new Date(payload.exp * 1000).toISOString()
-							: new Date(Date.now() + 7 * 86400 * 1000).toISOString();
-
-						await env.DB.prepare(
-							"INSERT INTO session_tokens (token, slug, access_token, created_at, expires_at) VALUES (?, ?, ?, datetime('now'), ?)"
-						).bind(sessionToken, slug, realAccessToken, expiresAt).run();
-
-						accessToken = sessionToken;
-					}
-					// else: invalid token (not session, not JWT) — playlist/folder stay null
-				}
-
-				if (playlist) {
-					const [songs, zips] = await Promise.all([
-						env.DB.prepare(
-							"SELECT * FROM songs WHERE playlist_id = ? ORDER BY folder, track_number, title"
-						).bind(playlist.id).all(),
-						env.DB.prepare(
-							"SELECT folder, part, total_parts, file_size, song_count FROM playlist_zips WHERE playlist_id = ? ORDER BY folder, part"
-						).bind(playlist.id).all(),
-					]);
-					return new Response(renderPlaylistPage(playlist, songs.results, accessToken, zips.results), {
-						headers: { "content-type": "text/html; charset=utf-8" },
-					});
-				}
-
-				if (folder) {
-					const playlists = await env.DB.prepare(
-						"SELECT * FROM playlists WHERE folder_id = ? ORDER BY name"
-					).bind(folder.id).all();
-
-					const [songsResults, zipsResults] = await Promise.all([
-						Promise.all(playlists.results.map((p: any) =>
-							env.DB.prepare("SELECT * FROM songs WHERE playlist_id = ? ORDER BY folder, track_number, title").bind(p.id).all()
-						)),
-						Promise.all(playlists.results.map((p: any) =>
-							env.DB.prepare("SELECT folder, part, total_parts, file_size, song_count FROM playlist_zips WHERE playlist_id = ? ORDER BY folder, part").bind(p.id).all()
-						)),
-					]);
-
-					const allSongs = new Map<number, any[]>();
-					const allZips = new Map<number, any[]>();
-					playlists.results.forEach((p: any, i: number) => {
-						allSongs.set(p.id, songsResults[i].results);
-						allZips.set(p.id, zipsResults[i].results);
-					});
-
-					return new Response(renderFolderPage(folder, playlists.results, allSongs, allZips, accessToken), {
-						headers: { "content-type": "text/html; charset=utf-8" },
-					});
-				}
-
-				return new Response(renderAccessDenied(), {
-					status: 403, headers: { "content-type": "text/html; charset=utf-8" },
-				});
+				return await handleSlugPage(env, request, slug, token, isAdmin);
 			}
 
 			return new Response("Not found", { status: 404 });
@@ -407,69 +109,210 @@ export default {
 	},
 } satisfies ExportedHandler<Env>;
 
-function renderAccessDenied(): string {
-	return `<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-	<meta charset="UTF-8">
-	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<title>Acesso Negado</title>
-	<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
-	<style>
-	*{margin:0;padding:0;box-sizing:border-box}
-	body{font-family:'Inter',sans-serif;background:#fafafa;display:flex;align-items:center;justify-content:center;min-height:100vh}
-	.card{text-align:center;padding:48px}
-	h1{font-size:20px;margin-bottom:8px;color:#1a1a1a}
-	p{font-size:14px;color:#888}
-	</style>
-</head>
-<body><div class="card"><h1>Acesso Negado</h1><p>Este link é inválido ou expirou. Entre em contato com o vendedor.</p></div></body>
-</html>`;
+async function handleSlugPage(env: Env, _request: Request, slug: string, token: string, isAdmin: boolean): Promise<Response> {
+	let playlist: any = null;
+	let folder: any = null;
+	let accessToken = "";
+	let expiresAt = "";
+	let setCookie = "";
+
+	if (isAdmin && !token) {
+		[playlist, folder] = await Promise.all([
+			env.DB.prepare("SELECT * FROM playlists WHERE slug = ?").bind(slug).first(),
+			env.DB.prepare("SELECT * FROM folders WHERE slug = ?").bind(slug).first(),
+		]);
+	} else if (token) {
+		const session = await env.DB.prepare(
+			"SELECT access_token, expires_at, max_uses, use_count, label FROM session_tokens WHERE token = ? AND expires_at > datetime('now')"
+		).bind(token).first<{ access_token: string; expires_at: string; max_uses: number | null; use_count: number; label: string | null }>();
+
+		if (session) {
+			// Shared link with max_uses: check limit using cookie to deduplicate
+			if (session.max_uses !== null) {
+				const cookieName = `patacos_v_${token.slice(0, 12)}`;
+				const cookies = _request.headers.get("cookie") || "";
+				const isRepeatVisit = cookies.includes(cookieName + "=1");
+
+				if (!isRepeatVisit) {
+					if (session.use_count >= session.max_uses) {
+						return new Response(renderAccessDenied("Limite de acessos atingido para este link."), {
+							status: 403, headers: { "content-type": "text/html; charset=utf-8" },
+						});
+					}
+					// Increment use_count (non-blocking)
+					env.DB.prepare("UPDATE session_tokens SET use_count = use_count + 1 WHERE token = ?")
+						.bind(token).run().catch(() => {});
+					// Set cookie to avoid counting refreshes (expires with the link)
+					const cookieExpires = new Date(session.expires_at).toUTCString();
+					setCookie = `${cookieName}=1; Path=/; Expires=${cookieExpires}; SameSite=Lax`;
+				}
+			}
+
+			[playlist, folder] = await Promise.all([
+				env.DB.prepare("SELECT * FROM playlists WHERE slug = ? AND access_token = ?").bind(slug, session.access_token).first(),
+				env.DB.prepare("SELECT * FROM folders WHERE slug = ? AND access_token = ?").bind(slug, session.access_token).first(),
+			]);
+			accessToken = token;
+			expiresAt = session.expires_at;
+		} else if (token.startsWith("eyJ")) {
+			const result = await handleJwtAccess(env, slug, token);
+			if (result.error) {
+				return new Response(result.error, {
+					status: 403, headers: { "content-type": "text/html; charset=utf-8" },
+				});
+			}
+			playlist = result.playlist;
+			folder = result.folder;
+			accessToken = result.accessToken;
+		}
+	}
+
+	if (playlist) {
+		const [folderStats, previewSongs, zips] = await Promise.all([
+			env.DB.prepare(
+				"SELECT folder, COUNT(*) as count FROM songs WHERE playlist_id = ? GROUP BY folder ORDER BY folder"
+			).bind(playlist.id).all(),
+			env.DB.prepare(
+				"SELECT * FROM songs WHERE playlist_id = ? ORDER BY folder, track_number, title LIMIT 200"
+			).bind(playlist.id).all(),
+			env.DB.prepare(
+				"SELECT folder, part, total_parts, file_size, song_count FROM playlist_zips WHERE playlist_id = ? ORDER BY folder, part"
+			).bind(playlist.id).all(),
+		]);
+		const totalCount = folderStats.results.reduce((sum: number, r: any) => sum + (r.count as number), 0);
+		const headers: Record<string, string> = {
+			"content-type": "text/html; charset=utf-8",
+			"Cache-Control": "private, max-age=300",
+		};
+		if (setCookie) headers["set-cookie"] = setCookie;
+		return new Response(
+			renderPlaylistPage(playlist, folderStats.results as any[], previewSongs.results, totalCount, accessToken, zips.results, expiresAt),
+			{ headers },
+		);
+	}
+
+	if (folder) {
+		const [playlists, allSongsRows, allZipsRows] = await Promise.all([
+			env.DB.prepare(
+				"SELECT p.* FROM playlists p JOIN playlist_folders pf ON p.id = pf.playlist_id WHERE pf.folder_id = ? ORDER BY p.name"
+			).bind(folder.id).all(),
+			env.DB.prepare(
+				"SELECT s.* FROM songs s JOIN playlists p ON s.playlist_id = p.id JOIN playlist_folders pf ON p.id = pf.playlist_id WHERE pf.folder_id = ? ORDER BY s.playlist_id, s.folder, s.track_number, s.title"
+			).bind(folder.id).all(),
+			env.DB.prepare(
+				"SELECT pz.* FROM playlist_zips pz JOIN playlists p ON pz.playlist_id = p.id JOIN playlist_folders pf ON p.id = pf.playlist_id WHERE pf.folder_id = ? ORDER BY pz.playlist_id, pz.folder, pz.part"
+			).bind(folder.id).all(),
+		]);
+
+		const allSongs = new Map<number, any[]>();
+		const allZips = new Map<number, any[]>();
+		for (const s of allSongsRows.results) {
+			const pid = (s as any).playlist_id;
+			if (!allSongs.has(pid)) allSongs.set(pid, []);
+			allSongs.get(pid)!.push(s);
+		}
+		for (const z of allZipsRows.results) {
+			const pid = (z as any).playlist_id;
+			if (!allZips.has(pid)) allZips.set(pid, []);
+			allZips.get(pid)!.push(z);
+		}
+
+		// Ensure every playlist has an entry in the maps (even if empty)
+		for (const p of playlists.results) {
+			const pid = (p as any).id;
+			if (!allSongs.has(pid)) allSongs.set(pid, []);
+			if (!allZips.has(pid)) allZips.set(pid, []);
+		}
+
+		const headers: Record<string, string> = {
+			"content-type": "text/html; charset=utf-8",
+			"Cache-Control": "private, max-age=300",
+		};
+		if (setCookie) headers["set-cookie"] = setCookie;
+		return new Response(renderFolderPage(folder, playlists.results, allSongs, allZips, accessToken, expiresAt), { headers });
+	}
+
+	return new Response(renderAccessDenied(), {
+		status: 403, headers: { "content-type": "text/html; charset=utf-8" },
+	});
 }
 
-function renderJwtError(type: "expired" | "invalid" | "limit" | "product"): string {
-	const messages: Record<string, { title: string; desc: string }> = {
-		expired: { title: "Link Expirado", desc: "Seu link de acesso expirou. Entre em contato com o vendedor para obter um novo link." },
-		invalid: { title: "Link Inv\u00e1lido", desc: "Este link de acesso \u00e9 inv\u00e1lido. Verifique se copiou o link corretamente." },
-		limit: { title: "Limite de Acessos Atingido", desc: "Voc\u00ea j\u00e1 atingiu o n\u00famero m\u00e1ximo de acessos permitidos para este link." },
-		product: { title: "Produto N\u00e3o Encontrado", desc: "O produto associado a este link n\u00e3o foi encontrado. Entre em contato com o vendedor." },
-	};
-	const msg = messages[type] || messages.invalid;
-	return `<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-	<meta charset="UTF-8">
-	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<title>${msg.title} - Patacos</title>
-	<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
-	<style>
-	*{margin:0;padding:0;box-sizing:border-box}
-	body{font-family:'Inter',sans-serif;background:#fafafa;display:flex;align-items:center;justify-content:center;min-height:100vh}
-	.card{text-align:center;padding:48px;max-width:400px}
-	h1{font-size:20px;margin-bottom:8px;color:#1a1a1a}
-	p{font-size:14px;color:#888;line-height:1.6}
-	</style>
-</head>
-<body><div class="card"><h1>${msg.title}</h1><p>${msg.desc}</p></div></body>
-</html>`;
-}
+async function handleJwtAccess(env: Env, slug: string, token: string): Promise<{ playlist?: any; folder?: any; accessToken: string; error?: string }> {
+	const [playlist, folder] = await Promise.all([
+		env.DB.prepare("SELECT * FROM playlists WHERE slug = ?").bind(slug).first(),
+		env.DB.prepare("SELECT * FROM folders WHERE slug = ?").bind(slug).first(),
+	]);
 
-function renderZipUnavailable(): string {
-	return `<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-	<meta charset="UTF-8">
-	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<title>ZIP Indisponível</title>
-	<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
-	<style>
-	*{margin:0;padding:0;box-sizing:border-box}
-	body{font-family:'Inter',sans-serif;background:#fafafa;display:flex;align-items:center;justify-content:center;min-height:100vh}
-	.card{text-align:center;padding:48px}
-	h1{font-size:20px;margin-bottom:8px;color:#1a1a1a}
-	p{font-size:14px;color:#888}
-	</style>
-</head>
-<body><div class="card"><h1>ZIP Indisponível</h1><p>O arquivo ZIP ainda está sendo preparado. Tente novamente em alguns minutos.</p></div></body>
-</html>`;
+	if (!playlist && !folder) {
+		return { accessToken: "", error: renderAccessDenied() };
+	}
+
+	const entity = (playlist || folder) as any;
+	const jwtSecretField = (entity.jwt_secret || "").trim();
+	if (!jwtSecretField) {
+		return { accessToken: "", error: renderAccessDenied() };
+	}
+
+	const secrets = jwtSecretField.split("\n").map((s: string) => s.trim()).filter(Boolean);
+	let payload = null;
+	let lastError = "";
+	for (const secret of secrets) {
+		try {
+			payload = await verifyJwt(token, secret);
+			break;
+		} catch (err: any) {
+			lastError = err.message;
+		}
+	}
+
+	if (!payload) {
+		const msg = lastError === "Token expirado" ? "expired" : "invalid";
+		return { accessToken: "", error: renderJwtError(msg) };
+	}
+
+	// Check for existing valid session for this order — reuse without incrementing access count
+	const existingSession = await env.DB.prepare(
+		"SELECT token FROM session_tokens WHERE slug = ? AND access_token = ? AND expires_at > datetime('now') LIMIT 1"
+	).bind(slug, entity.access_token).first<{ token: string }>();
+
+	if (existingSession) {
+		return { playlist, folder, accessToken: existingSession.token };
+	}
+
+	// Check download_limit
+	const existing = await env.DB.prepare(
+		"SELECT access_count FROM order_accesses WHERE order_id = ?"
+	).bind(payload.order_id).first<{ access_count: number }>();
+
+	const currentCount = existing?.access_count || 0;
+	if (payload.download_limit > 0 && currentCount >= payload.download_limit) {
+		return { accessToken: "", error: renderJwtError("limit") };
+	}
+
+	// Upsert access count — only on first session creation
+	if (existing) {
+		await env.DB.prepare(
+			"UPDATE order_accesses SET access_count = access_count + 1, last_accessed = datetime('now') WHERE order_id = ?"
+		).bind(payload.order_id).run();
+	} else {
+		await env.DB.prepare(
+			"INSERT INTO order_accesses (order_id, product_id, email, access_count, created_at, last_accessed) VALUES (?, ?, ?, 1, datetime('now'), datetime('now'))"
+		).bind(payload.order_id, payload.product_id, payload.email).run();
+	}
+
+	// Generate temporary session token
+	const sessionBytes = new Uint8Array(32);
+	crypto.getRandomValues(sessionBytes);
+	const sessionToken = Array.from(sessionBytes).map(b => b.toString(16).padStart(2, "0")).join("");
+	const realAccessToken = entity.access_token;
+
+	const expiresAt = payload.exp
+		? new Date(payload.exp * 1000).toISOString()
+		: new Date(Date.now() + 7 * 86400 * 1000).toISOString();
+
+	await env.DB.prepare(
+		"INSERT INTO session_tokens (token, slug, access_token, created_at, expires_at) VALUES (?, ?, ?, datetime('now'), ?)"
+	).bind(sessionToken, slug, realAccessToken, expiresAt).run();
+
+	return { playlist, folder, accessToken: sessionToken };
 }

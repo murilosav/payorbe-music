@@ -1,0 +1,4 @@
+#!/bin/bash
+# Patacos CLI — wrapper simplificado
+DIR="$(cd "$(dirname "$0")/.." && pwd)"
+node "$DIR/cli/patacos.mjs" "$@"
