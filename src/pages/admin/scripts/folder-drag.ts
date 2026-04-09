@@ -73,6 +73,55 @@ export function folderDragScript(): string {
 		} catch (e) { toast('Erro: ' + e.message, 'error'); }
 	}
 
+	async function reorderInFolder(playlistId, folderId, direction) {
+		// Build current ordered list of playlists in this folder
+		var entries = [];
+		for (var i = 0; i < playlistsCache.length; i++) {
+			var p = playlistsCache[i];
+			var fids = p.folder_ids || [];
+			if (fids.indexOf(folderId) === -1) continue;
+			var pos = ((p.folder_positions || {})[folderId]) || 0;
+			entries.push({ id: p.id, pos: pos, name: p.name || '' });
+		}
+		entries.sort(function(a, b) {
+			if (a.pos !== b.pos) return a.pos - b.pos;
+			return a.name.localeCompare(b.name);
+		});
+
+		var idx = -1;
+		for (var j = 0; j < entries.length; j++) {
+			if (entries[j].id === playlistId) { idx = j; break; }
+		}
+		if (idx === -1) return;
+		var target = idx + direction;
+		if (target < 0 || target >= entries.length) return;
+
+		var tmp = entries[idx];
+		entries[idx] = entries[target];
+		entries[target] = tmp;
+
+		var ids = entries.map(function(e) { return e.id; });
+		try {
+			var res = await fetch('/api/folders/' + folderId + '/reorder', {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ playlist_ids: ids })
+			});
+			if (!res.ok) { toast('Erro ao reordenar', 'error'); return; }
+			// Update local cache to avoid full reload flicker
+			for (var k = 0; k < ids.length; k++) {
+				for (var m = 0; m < playlistsCache.length; m++) {
+					if (playlistsCache[m].id === ids[k]) {
+						playlistsCache[m].folder_positions = playlistsCache[m].folder_positions || {};
+						playlistsCache[m].folder_positions[folderId] = k;
+						break;
+					}
+				}
+			}
+			loadPlaylists();
+		} catch (e) { toast('Erro: ' + e.message, 'error'); }
+	}
+
 	async function removeFromFolder(playlistId, folderId) {
 		try {
 			var res = await fetch('/api/playlists/' + playlistId + '/folder/' + folderId, { method: 'DELETE' });

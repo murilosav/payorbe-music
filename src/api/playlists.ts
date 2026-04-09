@@ -18,19 +18,23 @@ export async function handlePlaylists(request: Request, env: Env, path: string, 
 				FROM playlists p ORDER BY p.created_at DESC LIMIT ? OFFSET ?`
 			).bind(limit, offset).all(),
 			env.DB.prepare("SELECT COUNT(*) as total FROM playlists").first<{ total: number }>(),
-			env.DB.prepare("SELECT playlist_id, folder_id FROM playlist_folders").all(),
+			env.DB.prepare("SELECT playlist_id, folder_id, position FROM playlist_folders").all(),
 		]);
 
-		// Build folder_ids map
+		// Build folder_ids map and per-folder position map
 		const folderMap = new Map<number, number[]>();
+		const positionMap = new Map<number, Record<string, number>>();
 		for (const row of pfRows) {
-			const r = row as { playlist_id: number; folder_id: number };
+			const r = row as { playlist_id: number; folder_id: number; position: number };
 			if (!folderMap.has(r.playlist_id)) folderMap.set(r.playlist_id, []);
 			folderMap.get(r.playlist_id)!.push(r.folder_id);
+			if (!positionMap.has(r.playlist_id)) positionMap.set(r.playlist_id, {});
+			positionMap.get(r.playlist_id)![String(r.folder_id)] = r.position;
 		}
 		const enriched = results.map((p: any) => ({
 			...p,
 			folder_ids: folderMap.get(p.id) || [],
+			folder_positions: positionMap.get(p.id) || {},
 			folder_id: (folderMap.get(p.id) || [])[0] || null, // backward compat
 		}));
 

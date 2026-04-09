@@ -81,14 +81,34 @@ export async function handleFolders(request: Request, env: Env, path: string): P
 		const id = parseInt(moveMatch[1]);
 		const body = await request.json<{ folder_id: number | null }>();
 		if (body.folder_id) {
-			// Add to folder (keep existing associations)
+			// Add to folder at the end (keep existing associations)
+			const maxRow = await env.DB.prepare(
+				"SELECT COALESCE(MAX(position), -1) as max_pos FROM playlist_folders WHERE folder_id = ?"
+			).bind(body.folder_id).first<{ max_pos: number }>();
+			const nextPos = (maxRow?.max_pos ?? -1) + 1;
 			await env.DB.prepare(
-				"INSERT OR IGNORE INTO playlist_folders (playlist_id, folder_id) VALUES (?, ?)"
-			).bind(id, body.folder_id).run();
+				"INSERT OR IGNORE INTO playlist_folders (playlist_id, folder_id, position) VALUES (?, ?, ?)"
+			).bind(id, body.folder_id, nextPos).run();
 		} else {
 			// Remove from all folders
 			await env.DB.prepare("DELETE FROM playlist_folders WHERE playlist_id = ?").bind(id).run();
 		}
+		return json({ success: true });
+	}
+
+	// PUT /api/folders/:id/reorder - Reorder playlists within a folder
+	const reorderMatch = path.match(/^\/api\/folders\/(\d+)\/reorder$/);
+	if (reorderMatch && request.method === "PUT") {
+		const folderId = parseInt(reorderMatch[1]);
+		const body = await request.json<{ playlist_ids: number[] }>();
+		if (!Array.isArray(body.playlist_ids)) return json({ error: "playlist_ids deve ser um array" }, 400);
+
+		const stmts = body.playlist_ids.map((pid, idx) =>
+			env.DB.prepare(
+				"UPDATE playlist_folders SET position = ? WHERE folder_id = ? AND playlist_id = ?"
+			).bind(idx, folderId, pid)
+		);
+		if (stmts.length > 0) await env.DB.batch(stmts);
 		return json({ success: true });
 	}
 

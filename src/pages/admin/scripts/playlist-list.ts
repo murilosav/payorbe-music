@@ -39,6 +39,8 @@ export function playlistListScript(): string {
 					'</div>' +
 				'</div>' +
 				'<div class="pl-actions">' +
+					(inFolderId ? '<button class="btn btn-ghost btn-sm" style="font-size:11px;padding:4px 8px;" onclick="reorderInFolder('+p.id+','+inFolderId+',-1)" title="Mover para cima">\\u25B2</button>' : '') +
+					(inFolderId ? '<button class="btn btn-ghost btn-sm" style="font-size:11px;padding:4px 8px;" onclick="reorderInFolder('+p.id+','+inFolderId+',1)" title="Mover para baixo">\\u25BC</button>' : '') +
 					(inFolderId ? '<button class="btn btn-ghost btn-sm" style="color:#ef4444;font-size:11px;" onclick="removeFromFolder('+p.id+','+inFolderId+')" title="Remover desta pasta">\\u2716</button>' : '') +
 					'<button class="btn btn-primary btn-sm" onclick="openDetail('+idx+')">Gerenciar</button>' +
 					'<button class="btn btn-danger btn-sm" data-id="'+p.id+'" data-name="'+safeName+'" onclick="deletePlaylist(+this.dataset.id, this.dataset.name)">Excluir</button>' +
@@ -73,6 +75,12 @@ export function playlistListScript(): string {
 				var fids = playlistsCache[pi].folder_ids || [];
 				if (fids.indexOf(folder.id) !== -1) folderPlaylists.push(pi);
 			}
+			folderPlaylists.sort(function(a, b) {
+				var pa = ((playlistsCache[a].folder_positions || {})[folder.id]) || 0;
+				var pb = ((playlistsCache[b].folder_positions || {})[folder.id]) || 0;
+				if (pa !== pb) return pa - pb;
+				return (playlistsCache[a].name || '').localeCompare(playlistsCache[b].name || '');
+			});
 
 			var hasJwt = !!(folder.jwt_secret);
 			var safeFolderName = (folder.name || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');

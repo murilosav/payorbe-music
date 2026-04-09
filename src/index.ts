@@ -194,7 +194,7 @@ async function handleSlugPage(env: Env, _request: Request, slug: string, token: 
 	if (folder) {
 		const [playlists, allSongsRows, allZipsRows] = await Promise.all([
 			env.DB.prepare(
-				"SELECT p.* FROM playlists p JOIN playlist_folders pf ON p.id = pf.playlist_id WHERE pf.folder_id = ? ORDER BY p.name"
+				"SELECT p.* FROM playlists p JOIN playlist_folders pf ON p.id = pf.playlist_id WHERE pf.folder_id = ? ORDER BY pf.position, p.name"
 			).bind(folder.id).all(),
 			env.DB.prepare(
 				"SELECT s.* FROM songs s JOIN playlists p ON s.playlist_id = p.id JOIN playlist_folders pf ON p.id = pf.playlist_id WHERE pf.folder_id = ? ORDER BY s.playlist_id, s.folder, s.track_number, s.title"
