@@ -24,7 +24,10 @@ export function playlistListScript(): string {
 		var hasJwt = !!p.jwt_secret;
 		var safeName = (p.name || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 
-		return '<div class="pl-card" draggable="true" ondragstart="onDragStart(event,'+idx+')" ondragend="onDragEnd(event)">' +
+		var cardDropAttrs = inFolderId
+			? ' ondragover="onCardDragOver(event,'+idx+','+inFolderId+')" ondragleave="onCardDragLeave(event)" ondrop="onCardDrop(event,'+idx+','+inFolderId+')"'
+			: '';
+		return '<div class="pl-card" draggable="true" ondragstart="onDragStart(event,'+idx+')" ondragend="onDragEnd(event)"'+cardDropAttrs+'>' +
 			'<div class="pl-card-top">' +
 				'<div class="drag-handle" title="Arraste para mover"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.5"/><circle cx="15" cy="6" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="18" r="1.5"/><circle cx="15" cy="18" r="1.5"/></svg></div>' +
 				'<div class="pl-cover">' + coverHtml + '</div>' +
@@ -39,8 +42,6 @@ export function playlistListScript(): string {
 					'</div>' +
 				'</div>' +
 				'<div class="pl-actions">' +
-					(inFolderId ? '<button class="btn btn-ghost btn-sm" style="font-size:11px;padding:4px 8px;" onclick="reorderInFolder('+p.id+','+inFolderId+',-1)" title="Mover para cima">\\u25B2</button>' : '') +
-					(inFolderId ? '<button class="btn btn-ghost btn-sm" style="font-size:11px;padding:4px 8px;" onclick="reorderInFolder('+p.id+','+inFolderId+',1)" title="Mover para baixo">\\u25BC</button>' : '') +
 					(inFolderId ? '<button class="btn btn-ghost btn-sm" style="color:#ef4444;font-size:11px;" onclick="removeFromFolder('+p.id+','+inFolderId+')" title="Remover desta pasta">\\u2716</button>' : '') +
 					'<button class="btn btn-primary btn-sm" onclick="openDetail('+idx+')">Gerenciar</button>' +
 					'<button class="btn btn-danger btn-sm" data-id="'+p.id+'" data-name="'+safeName+'" onclick="deletePlaylist(+this.dataset.id, this.dataset.name)">Excluir</button>' +

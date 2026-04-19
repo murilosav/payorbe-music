@@ -122,6 +122,8 @@ export function adminStyles(): string {
 	.folder-drop-hint { display:none; font-size:12px; color:#16a34a; padding:8px 20px; font-weight:500; text-align:center; }
 	.standalone-zone { transition:all 0.2s; min-height:20px; padding:4px 0; border-radius:14px; border:2px solid transparent; }
 	.standalone-zone.drag-over { background:#fef3c7; border-color:#d97706; }
+	.pl-card.drop-before { box-shadow:inset 0 3px 0 0 #6366f1; }
+	.pl-card.drop-after { box-shadow:inset 0 -3px 0 0 #6366f1; }
 
 	/* Folder card */
 	.folder-card { background:linear-gradient(135deg, #f8f8ff 0%, #f0f0ff 100%); border:1px solid #e0e0f0; border-radius:12px; margin-bottom:4px; }

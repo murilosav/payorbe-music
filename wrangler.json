@@ -3,6 +3,12 @@
 	"main": "src/index.ts",
 	"name": "payorbe-music",
 	"upload_source_maps": true,
+	"assets": {
+		"directory": "./public"
+	},
+	"triggers": {
+		"crons": ["0 3 * * *"]
+	},
 	"workers_dev": true,
 	"d1_databases": [
 		{

@@ -8,7 +8,6 @@ import { verifyJwt } from "./jwt";
 import { handlePlaylistCover, handleSongCover, handleDownload } from "./routes/media";
 import { handleZipDownload } from "./routes/zip";
 import { renderAccessDenied, renderJwtError } from "./routes/error-pages";
-import { getFaviconBytes } from "./assets/favicon";
 export interface Env {
 	DB: D1Database;
 	MUSIC_BUCKET: R2Bucket;
@@ -38,21 +37,7 @@ export default {
 			return new Response(null, { headers: corsHeaders });
 		}
 
-		if (path === "/favicon.ico") {
-			return new Response(getFaviconBytes(), {
-				headers: {
-					"content-type": "image/x-icon",
-					"Cache-Control": "public, max-age=604800, immutable",
-				},
-			});
-		}
-
 		try {
-			// Cleanup expired session tokens (~2% of requests)
-			if (Math.random() < 0.02) {
-				env.DB.prepare("DELETE FROM session_tokens WHERE expires_at < datetime('now')").run();
-			}
-
 			const isAdmin = await verifyAuth(request, env);
 
 			// Auth routes
@@ -65,6 +50,16 @@ export default {
 					return new Response(JSON.stringify({ error: "Unauthorized" }), {
 						status: 401, headers: { "content-type": "application/json" },
 					});
+				}
+				// CSRF: for mutations, require either Bearer auth (CLI) or same-origin (browser)
+				if (request.method !== "GET" && request.method !== "HEAD") {
+					const hasBearer = !!request.headers.get("Authorization");
+					const originOk = allowedOrigins.includes(origin);
+					if (!hasBearer && !originOk) {
+						return new Response(JSON.stringify({ error: "Forbidden" }), {
+							status: 403, headers: { "content-type": "application/json" },
+						});
+					}
 				}
 				const response = await handleApi(request, env, path, ctx);
 				const newHeaders = new Headers(response.headers);
@@ -116,6 +111,14 @@ export default {
 				status: 500, headers: { "content-type": "application/json" },
 			});
 		}
+	},
+
+	async scheduled(_controller: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
+		await Promise.all([
+			env.DB.prepare("DELETE FROM session_tokens WHERE expires_at < datetime('now')").run(),
+			env.DB.prepare("DELETE FROM admin_sessions WHERE expires_at < datetime('now')").run(),
+			env.DB.prepare("DELETE FROM login_attempts WHERE attempted_at < datetime('now', '-1 hour')").run(),
+		]);
 	},
 } satisfies ExportedHandler<Env>;
 
