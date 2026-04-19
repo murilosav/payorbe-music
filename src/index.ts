@@ -8,6 +8,7 @@ import { verifyJwt } from "./jwt";
 import { handlePlaylistCover, handleSongCover, handleDownload } from "./routes/media";
 import { handleZipDownload } from "./routes/zip";
 import { renderAccessDenied, renderJwtError } from "./routes/error-pages";
+import { getFaviconBytes } from "./assets/favicon";
 export interface Env {
 	DB: D1Database;
 	MUSIC_BUCKET: R2Bucket;
@@ -35,6 +36,15 @@ export default {
 
 		if (request.method === "OPTIONS") {
 			return new Response(null, { headers: corsHeaders });
+		}
+
+		if (path === "/favicon.ico") {
+			return new Response(getFaviconBytes(), {
+				headers: {
+					"content-type": "image/x-icon",
+					"Cache-Control": "public, max-age=604800, immutable",
+				},
+			});
 		}
 
 		try {

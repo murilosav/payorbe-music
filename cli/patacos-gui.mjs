@@ -506,6 +506,7 @@ const HTML = `<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Patacos — Upload Manager</title>
+<link rel="icon" href="/favicon.ico" type="image/x-icon">
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', sans-serif; background: #0a0a0a; color: #e5e5e5; min-height: 100vh; }
@@ -751,6 +752,21 @@ const server = createServer(async (req, res) => {
 	if (url.pathname === "/" && req.method === "GET") {
 		res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
 		res.end(HTML);
+		return;
+	}
+
+	if (url.pathname === "/favicon.ico" && req.method === "GET") {
+		try {
+			const favicon = readFileSync(join(PROJECT_ROOT, "src/assets/favicon.ico"));
+			res.writeHead(200, {
+				"Content-Type": "image/x-icon",
+				"Cache-Control": "public, max-age=604800, immutable",
+			});
+			res.end(favicon);
+		} catch {
+			res.writeHead(404);
+			res.end();
+		}
 		return;
 	}
 
